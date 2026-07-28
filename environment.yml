@@ -1,0 +1,9 @@
+name: eai-swarm
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - mosquitto
+  - pip
+  - pip:
+      - -r requirements.txt
