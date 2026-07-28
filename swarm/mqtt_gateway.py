@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 import json
 import logging
+from pathlib import Path
 import threading
 import time
 from typing import Any
@@ -20,8 +21,9 @@ class MqttSettings:
 
 
 class MqttGateway:
-    def __init__(self, settings: MqttSettings, max_events: int = 500):
+    def __init__(self, settings: MqttSettings, max_events: int = 500, event_log_path: str | None = None):
         self.settings = settings
+        self.event_log_path = Path(event_log_path) if event_log_path else None
         self.events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._lock = threading.Lock()
         self._connected = threading.Event()
@@ -69,6 +71,15 @@ class MqttGateway:
         }
         with self._lock:
             self.events.append(event)
+            self._append_event_log(event)
+
+    def _append_event_log(self, event: dict[str, Any]) -> None:
+        if self.event_log_path is None:
+            return
+
+        self.event_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.event_log_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     def publish_command(self, command: dict[str, Any]) -> None:
         drone_id = int(command["drone"])

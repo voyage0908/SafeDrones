@@ -8,6 +8,7 @@
 2. 默认调用 DeepSeek，把文本转成结构化航点 JSON
 3. 网关发布到 `swarm/drone/{id}/command`
 4. 网关订阅 `swarm/commander/status` 和 `swarm/commander/override`，供后续 Safety Gate 使用
+5. 反向事件默认写入 `logs/gateway_events.jsonl`，同时保留最近事件用于 `/api/events` 和后续 LLM 上下文
 
 ## API Key
 
@@ -92,4 +93,16 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
 
 ```bash
 curl http://127.0.0.1:8000/api/events
+```
+
+事件日志默认位置：
+
+```bash
+logs/gateway_events.jsonl
+```
+
+可以用环境变量覆盖：
+
+```bash
+export MQTT_EVENT_LOG=/tmp/gateway_events.jsonl
 ```

@@ -222,10 +222,10 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 - **目标**：开发 FastAPI 网关，用大模型替代人手发指令，同时搭建 MQTT 反向通道基础设施。
 - **具体任务**：
     1. **搭建 FastAPI 网关**：编写 `gateway.py`，暴露接口 `/api/command` 接收文本（例如："让 1 号无人机飞到左前方的侦察点"）。
-    2. **接入 LLM (Prompt 编排)**：在网关中调用大模型 API。设计 System Prompt："你是一个无人机蜂群指挥官，你的任务是将自然语言转化为 JSON 格式的航点目标。坐标系中 X 是前，Y 是左，Z 是高。侦察点坐标预设为 `[10, 5, 2]`..."
-    3. **网关与 MQTT 对接**：FastAPI 解析出 LLM 的 JSON 坐标后，作为 MQTT 客户端将其发布到对应的 `command` 主题。
-    4. **【新增】搭建反向 MQTT 通道**：网关同时订阅 `swarm/commander/status` 和 `swarm/commander/override`，收到消息后记录到事件日志，并（在后续阶段）作为上下文回传给 LLM。
-    5. **阶段验证**：运行 `mock_drone.py` 和 FastAPI 网关。向网关发送文字："去侦察点"。在 MQTT Explorer 中看到 `command` 生成了指令，随后 `telemetry` 的坐标开始移动。
+    2. **接入 LLM (Prompt 编排)**：在网关中调用大模型 API，默认使用 DeepSeek，同时保留 OpenAI-Compatible Provider 接口。设计 System Prompt："你是一个无人机蜂群指挥官，你的任务是将自然语言转化为 JSON 格式的航点目标。坐标系中 X 是前，Y 是左，Z 是高。侦察点坐标预设为 `[10, 5, 2]`..."
+    3. **网关与 MQTT 对接**：FastAPI 解析出 LLM 的 JSON 坐标后，作为 MQTT 客户端将其发布到对应的 `command` 主题。开发环境可使用 `amqtt` broker，现场环境可替换为 Mosquitto，业务 topic 不变。
+    4. **【新增】搭建反向 MQTT 通道**：网关同时订阅 `swarm/commander/status` 和 `swarm/commander/override`，收到消息后记录到内存事件缓存和 JSONL 事件日志，并作为后续 LLM 请求的上下文。
+    5. **阶段验证**：运行 `mock_drone.py` 和 FastAPI 网关。向网关发送文字："去侦察点"。在 MQTT Explorer 或命令行订阅工具中看到 `command` 生成了指令，随后 `telemetry` 的坐标开始移动；同时通过 `/api/events` 验证反向通道事件可读。
 
 ### 阶段三：Unity 视觉孪生前置开发 (约 1-2 天)
 

@@ -47,6 +47,10 @@ def mqtt_settings_from_env() -> MqttSettings:
     )
 
 
+def event_log_path_from_env() -> str | None:
+    return os.getenv("MQTT_EVENT_LOG", "logs/gateway_events.jsonl")
+
+
 def command_payload(
     drone: int,
     waypoint: tuple[float, float, float] | list[float],
@@ -71,7 +75,7 @@ def command_payload(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    mqtt_gateway = MqttGateway(mqtt_settings_from_env())
+    mqtt_gateway = MqttGateway(mqtt_settings_from_env(), event_log_path=event_log_path_from_env())
     try:
         mqtt_gateway.start()
     except Exception as exc:
