@@ -7,3 +7,17 @@ __pycache__/
 logs/
 deepseek_api_key
 .vscode
+
+# Unity generated files
+**/Library/
+**/Temp/
+**/Obj/
+**/Build/
+**/Builds/
+**/Logs/
+**/UserSettings/
+*.csproj
+*.sln
+*.user
+*.pidb
+*.booproj
