@@ -1,6 +1,6 @@
 # 从零启动 Unity 可视化 Demo
 
-本文面向 Unity 新手，目标是从零安装 Unity Hub、Unity Editor、免费 MQTT 依赖，并启动本项目的 Unity 可视化 demo。
+本文面向 Unity 新手，目标是从零安装 Unity Hub 和 Unity Editor，然后直接打开仓库内置 Unity 项目，启动本项目的可视化 demo。
 
 最终链路：
 
@@ -34,31 +34,29 @@ Unity Hub 只是启动器，所以在 Hub 里看不到 `Edit` 菜单。只有打
 File  Edit  Assets  GameObject  Component  Window  Help
 ```
 
-## 2. 创建 Unity 项目
+## 2. 打开仓库内置 Unity 项目
+
+本仓库已经包含可直接运行的 Unity 项目，不需要新建项目，也不需要再手动导入 MQTT 插件。
+
+Unity 项目路径：
+
+```text
+D:\forum\EAI\project\unity\SwarmUnityDemo
+```
 
 在 Unity Hub 里：
 
 1. 进入 `Projects`。
-2. 点击 `New project`。
-3. Template 选择：
+2. 点击 `Add`、`Open` 或 `Add project from disk`。
+3. 选择这个目录：
 
    ```text
-   3D Core
+   $(root)\unity\SwarmUnityDemo
    ```
 
-4. 推荐项目名：
+4. 打开项目，等待 Unity 导入资源和编译脚本。
 
-   ```text
-   SwarmUnityDemo
-   ```
-
-5. 推荐放置位置：
-
-   ```text
-   D:\forum\EAI\project\unity\SwarmUnityDemo
-   ```
-
-推荐结构：
+仓库结构应保持为：
 
 ```text
 project/
@@ -71,15 +69,7 @@ project/
       ProjectSettings/
 ```
 
-不要把完整 Unity 项目直接放到仓库根目录，也不要命名为仓库里的 Python 包目录 `swarm/`。如果已经误放到 `project/swarm/`，短期可以继续跑 demo，但后续整理仓库时建议迁移到 `unity/SwarmUnityDemo/`。
-
-如果仓库里已经存在：
-
-```text
-D:\forum\EAI\project\unity\SwarmUnityDemo
-```
-
-可以不新建项目，直接在 Unity Hub 里选择 `Add project from disk` 或 `Open`，打开这个目录。
+不要把 Unity 项目移动到仓库根目录，也不要放到 Python 包目录 `swarm/` 下面。
 
 ## 3. 设置 VS Code 作为脚本编辑器
 
@@ -99,7 +89,7 @@ Visual Studio Code
 
 如果有 `Regenerate project files` 按钮，点一次。
 
-## 4. 导入免费 MQTT 依赖
+## 4. 确认 MQTT 依赖
 
 本 demo 使用 M2Mqtt 的命名空间：
 
@@ -107,35 +97,20 @@ Visual Studio Code
 uPLibrary.Networking.M2Mqtt
 ```
 
-推荐免费依赖：
+仓库内置 Unity 项目已经包含必需的免费 MQTT 依赖：
+
+```text
+unity/SwarmUnityDemo/Assets/M2Mqtt
+unity/SwarmUnityDemo/Assets/M2MqttUnity
+```
+
+来源是免费开源项目：
 
 ```text
 https://github.com/gpvigano/M2MqttUnity
 ```
 
-导入步骤：
-
-1. 打开上面的 GitHub 页面。
-2. 点击绿色 `Code`。
-3. 点击 `Download ZIP`。
-4. 解压 ZIP。
-5. 从解压目录里找到：
-
-   ```text
-   Assets/M2Mqtt
-   Assets/M2MqttUnity
-   ```
-
-6. 把这两个文件夹复制到你的 Unity 项目的 `Assets/` 下。
-
-导入后 Unity 项目应类似：
-
-```text
-SwarmUnityDemo/
-  Assets/
-    M2Mqtt/
-    M2MqttUnity/
-```
+所以正常情况下你不需要再从 Asset Store 或 GitHub 手动导入。
 
 如果 Unity Console 出现这个 warning，可以忽略：
 
@@ -145,72 +120,50 @@ SslProtocols.Ssl3 is obsolete
 
 原因是 M2Mqtt 旧代码里保留了 SSL 3.0 兼容分支；本 demo 使用本地非加密 MQTT `127.0.0.1:1883`，不会走 SSL。
 
-## 5. 导入 SwarmTelemetry 脚本
+如果 Console 报找不到 `uPLibrary.Networking.M2Mqtt`，说明 `Assets/M2Mqtt` 或 `Assets/M2MqttUnity` 缺失。此时再打开上面的 GitHub 地址，下载 ZIP，把其中的 `Assets/M2Mqtt` 和 `Assets/M2MqttUnity` 复制到 `unity/SwarmUnityDemo/Assets/`。
 
-如果你使用仓库内置项目 `unity/SwarmUnityDemo`，脚本已经在项目内，不需要再复制。
+## 5. 确认 SwarmTelemetry 脚本
 
-如果你新建了另一个 Unity 项目，再把本仓库里的脚本目录复制过去。
-
-源目录：
+脚本已经在仓库内置 Unity 项目内，不需要再复制。
 
 ```text
 D:\forum\EAI\project\unity\SwarmUnityDemo\Assets\Scripts\SwarmTelemetry
-```
-
-目标目录：
-
-```text
-你的Unity项目\Assets\Scripts\SwarmTelemetry
-```
-
-最终应看到：
-
-```text
-Assets/
-  Scripts/
-    SwarmTelemetry/
-      DroneTelemetrySubscriber.cs
-      DroneTelemetryView.cs
+  DroneTelemetrySubscriber.cs
+  DroneTelemetryView.cs
 ```
 
 Unity 重新编译后，Console 不能有红色 Error。黄色 Warning 可以先忽略。
 
-## 6. 配置 Unity 场景
+## 6. 确认 Unity 场景配置
 
-1. 在左侧 `Hierarchy` 右键：
+仓库内置项目可能已经保存了 `SwarmTelemetryManager`。先在左侧 `Hierarchy` 里找：
 
-   ```text
-   Create Empty
-   ```
+```text
+SwarmTelemetryManager
+```
 
-2. 命名为：
+如果已经存在，选中它并确认右侧 `Inspector` 上有：
 
-   ```text
-   SwarmTelemetryManager
-   ```
+```text
+DroneTelemetrySubscriber
+```
 
-3. 选中 `SwarmTelemetryManager`。
-4. 在右侧 `Inspector` 点击：
+如果没有，按下面步骤创建：
 
-   ```text
-   Add Component
-   ```
+1. 在左侧 `Hierarchy` 右键 `Create Empty`。
+2. 命名为 `SwarmTelemetryManager`。
+3. 选中它，在右侧 `Inspector` 点击 `Add Component`。
+4. 搜索并添加 `DroneTelemetrySubscriber`。
 
-5. 搜索并添加：
+参数保持默认：
 
-   ```text
-   DroneTelemetrySubscriber
-   ```
-
-6. 参数保持默认：
-
-   ```text
-   Broker Host: 127.0.0.1
-   Broker Port: 1883
-   Topic Filter: swarm/drone/+/telemetry
-   Use Unity Y As Altitude: enabled
-   Drone Prefab: empty
-   ```
+```text
+Broker Host: 127.0.0.1
+Broker Port: 1883
+Topic Filter: swarm/drone/+/telemetry
+Use Unity Y As Altitude: enabled
+Drone Prefab: empty
+```
 
 `Drone Prefab` 可以先空着。脚本会自动创建 Capsule 作为临时无人机模型。
 
