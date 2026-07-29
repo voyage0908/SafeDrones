@@ -40,7 +40,6 @@ AI 无人机机群对战科研实践课题，用 Openclaw 操控 Crazyflie 无�
 &nbsp;
 ## 第二天：Openclaw 与Crazyflie 无人机的双向通信
 
-### 1. 课题描述
 
 通过定制开发 openclaw plugin/node，实现 openclaw AI agent 与 crazyflie 无人机的双向通信。工作流程如下：1. 安装 openclaw AI agent
  系统；2. 在 openclaw 中加装微信和钉钉通信渠道；3. 开发 Openclaw plugin/node，打通从 openclaw gateway 到 crazyflie 无人机的双向通信链路；4. 在 openclaw 中创建多个 agents，每一个 agent 对应一架 crazyflie 无人机。
