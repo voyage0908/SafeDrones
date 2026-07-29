@@ -22,17 +22,42 @@ class SimulationTest(unittest.TestCase):
         self.assertEqual(command.target, (10.0, 5.0, 2.0))
         self.assertEqual(command.command_id, "cmd-1")
 
-    def test_state_reaches_target(self) -> None:
+    def test_state_accelerates_and_reaches_target(self) -> None:
         state = MockDroneState(drone_id=1, speed_mps=1)
         state.apply_command(parse_command('{"action":"move_to","target":[1,0,0]}'))
         state.update(0.25)
-        self.assertEqual(state.current_pos, (0.25, 0.0, 0.0))
+        self.assertEqual(state.current_pos, (0.0625, 0.0, 0.0))
+        self.assertEqual(state.velocity, (0.25, 0.0, 0.0))
         self.assertEqual(state.status, "flying")
         state.update(1)
         self.assertEqual(state.current_pos, (1.0, 0.0, 0.0))
         self.assertEqual(state.status, "idle")
 
+    def test_hover_brakes_instead_of_stopping_instantly(self) -> None:
+        state = MockDroneState(drone_id=1, speed_mps=2, max_accel_mps2=1)
+        state.apply_command(parse_command('{"action":"move_to","target":[5,0,1]}'))
+        state.update(1)
+        self.assertGreater(state.velocity[0], 0)
+
+        state.apply_command(parse_command('{"action":"hover","command_id":"stop-1"}'))
+        state.update(0.5)
+
+        self.assertEqual(state.status, "hovering")
+        self.assertGreater(state.velocity[0], 0)
+        self.assertLess(state.velocity[0], 1.0)
+
+    def test_telemetry_contains_motion_constraints(self) -> None:
+        state = MockDroneState(drone_id=1, speed_mps=1, max_accel_mps2=0.5, max_yaw_rate_dps=90)
+        state.apply_command(parse_command('{"action":"move_to","target":[1,1,1]}'))
+        state.update(0.1)
+
+        telemetry = state.telemetry(timestamp_ms=1)
+
+        self.assertIn("velocity", telemetry)
+        self.assertIn("yaw_deg", telemetry)
+        self.assertEqual(telemetry["max_accel_mps2"], 0.5)
+        self.assertEqual(telemetry["max_yaw_rate_dps"], 90)
+
 
 if __name__ == "__main__":
     unittest.main()
-

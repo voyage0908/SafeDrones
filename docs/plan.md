@@ -221,6 +221,20 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 
 **核心策略**：编写一个名为 `MockDrone`（模拟无人机）的 Python 脚本。它在网络上表现得完全像一架真实的无人机，接收 MQTT 指令，并在内存中通过简单的数学公式更新自己的"虚拟坐标"，然后再把坐标发回网络。
 
+### 仿真抽象与 Crazyflie 真机接口对齐
+
+本项目不把 Unity/MockDrone 作为电机级或螺旋桨级动力学仿真器，而是把它作为 **Crazyflie 闭环飞控外部行为的近似**。根据 Bitcraze 官方 `cflib` 和 Crazyflie Commander Framework，真实 Crazyflie 通常接收的是 position、velocity、hover 或 full-state setpoint；固件内部再完成位置/速度控制、姿态控制、电机混控和 PWM/推力输出。因此本项目的 MARL/Pilot/Safety Gate 不直接输出 motor RPM，而是输出可解释、可裁剪的航点、速度、悬停或刹车指令。
+
+仿真层需要建模的是闭环执行边界，而不是电机细节：
+
+- `max_speed_mps`
+- `max_accel_mps2` / `max_decel_mps2`
+- `max_yaw_rate_dps`
+- 高度上下限与软围栏
+- 命令延迟、定位噪声和刹车距离（后续扩展）
+
+这些参数后续通过低风险真机辨识实验得到，例如阶跃速度响应、刹车距离、悬停噪声和命令延迟测试；在真机接入前，MockDrone 使用保守默认值。这样 Unity 仿真、Safety Gate 和 Crazyflie 真机接口保持同一层抽象：上层发安全 setpoint，下层执行受约束闭环运动。
+
 ### 阶段一：搭建消息总线与"虚拟无人机" (约 1-2 天)
 
 - **目标**：跑通底层的 MQTT 发布/订阅机制，在没有任何硬件的情况下，让"虚拟飞机"在数据流中飞起来。
@@ -228,11 +242,11 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
     1. **安装环境**：电脑安装并运行 **Eclipse Mosquitto** (作为消息总线中心)；下载并安装桌面端调试工具 **MQTT Explorer** (用于可视化查看数据流)。
     2. **编写 `mock_drone.py`**：
         - 使用 `paho-mqtt` 库连接本地的 Mosquitto。
-        - **状态模拟**：在脚本中定义无人机的当前坐标 `current_pos = [0,0,0]` 和目标坐标 `target_pos = [0,0,0]`。
+        - **状态模拟**：在脚本中定义无人机的当前坐标 `current_pos = [0,0,0]`、速度 `velocity = [0,0,0]`、朝向 `yaw_deg` 和目标坐标 `target_pos = [0,0,0]`。
         - **指令订阅**：订阅主题 `swarm/drone/1/command`。当收到指令 `{"action": "move_to", "target": [5, 5, 2]}` 时，更新 `target_pos`。
         - **物理模拟与上报（主循环）**：开启一个 `while True` 循环，每 0.1 秒执行一次：
-            - 利用简单的数学逻辑（如逐步逼近），让 `current_pos` 向 `target_pos` 匀速移动（模拟飞行的耗时）。
-            - 将计算后的 `current_pos` 封装为 JSON：`{"x": current_pos[0], "y": current_pos[1], "z": current_pos[2], "status": "flying"}`。
+            - 利用带约束的运动学逻辑，让 `current_pos` 在 `max_speed_mps`、`max_accel_mps2` 和 `max_yaw_rate_dps` 限制下向 `target_pos` 移动，而不是瞬间跳转或无惯性匀速移动。
+            - 将计算后的状态封装为 JSON：`{"position": [...], "velocity": [...], "yaw_deg": ..., "status": "flying"}`。
             - 发布到主题 `swarm/drone/1/telemetry`。
             - **【新增】预留 Safety Gate 事件发布接口**：由后续 `safety_gate.py` 或网关发布 `swarm/commander/status` 和 `swarm/commander/override`，`mock_drone.py` 只负责接收指令并上报 telemetry。
     3. **阶段验证**：运行脚本后打开 MQTT Explorer，应能看到 `telemetry` 主题在刷新 `[0,0,0]`；手动在工具中向 `command` 发送目标坐标 `[5,5,2]`，能看到 `telemetry` 中的坐标数值平滑变化，直到抵达 `[5,5,2]` 停止。

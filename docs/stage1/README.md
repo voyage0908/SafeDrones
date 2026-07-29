@@ -5,7 +5,7 @@
 跑通最小无人机通信闭环：
 
 1. `mock_drone.py` 订阅 `swarm/drone/1/command`
-2. 收到 `move_to` 指令后，在内存中按匀速运动更新虚拟坐标
+2. 收到 `move_to` 指令后，在内存中按速度、加速度、yaw rate 约束更新虚拟坐标
 3. 每 0.1 秒向 `swarm/drone/1/telemetry` 发布 telemetry
 
 ## Conda 环境
@@ -45,6 +45,17 @@ mosquitto -p 1883
 python mock_drone.py --drone-id 1 --host localhost --port 1883
 ```
 
+可选运动约束参数：
+
+```bash
+python mock_drone.py --drone-id 1 \
+  --speed 1.0 \
+  --max-accel 1.0 \
+  --max-yaw-rate 120 \
+  --min-altitude 0 \
+  --max-altitude 5
+```
+
 ## 发送测试指令
 
 使用项目自带命令行工具：
@@ -59,7 +70,7 @@ python scripts/publish_command.py --drone-id 1 --target 5 5 2
 {"action":"move_to","target":[5,5,2]}
 ```
 
-观察 `swarm/drone/1/telemetry`，应能看到 `position` 从 `[0,0,0]` 平滑移动到 `[5,5,2]`。
+观察 `swarm/drone/1/telemetry`，应能看到 `position` 从 `[0,0,0]` 平滑移动到 `[5,5,2]`。telemetry 同时包含 `velocity`、`yaw_deg`、`max_accel_mps2` 和 `max_yaw_rate_dps`，供 Safety Gate 和后续真机参数对齐使用。
 
 也可以运行自动 smoke test。它会先订阅 telemetry，再自动发布一个远离当前位置的航点，并检查是否捕捉到至少三条连续变化的位置：
 

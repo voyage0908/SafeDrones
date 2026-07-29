@@ -37,6 +37,10 @@ def main() -> None:
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=1883)
     parser.add_argument("--speed", type=float, default=1.0, help="Default speed in meters per second.")
+    parser.add_argument("--max-accel", type=float, default=1.0, help="Maximum acceleration in m/s^2.")
+    parser.add_argument("--max-yaw-rate", type=float, default=120.0, help="Maximum yaw rate in deg/s.")
+    parser.add_argument("--min-altitude", type=float, default=0.0, help="Minimum simulated altitude in meters.")
+    parser.add_argument("--max-altitude", type=float, default=5.0, help="Maximum simulated altitude in meters.")
     parser.add_argument("--interval", type=float, default=0.1, help="Telemetry/update interval in seconds.")
     parser.add_argument("--qos", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -49,10 +53,23 @@ def main() -> None:
 
     if args.speed <= 0:
         raise SystemExit("--speed must be positive")
+    if args.max_accel <= 0:
+        raise SystemExit("--max-accel must be positive")
+    if args.max_yaw_rate <= 0:
+        raise SystemExit("--max-yaw-rate must be positive")
+    if args.min_altitude > args.max_altitude:
+        raise SystemExit("--min-altitude must be less than or equal to --max-altitude")
     if args.interval <= 0:
         raise SystemExit("--interval must be positive")
 
-    state = MockDroneState(drone_id=args.drone_id, speed_mps=args.speed)
+    state = MockDroneState(
+        drone_id=args.drone_id,
+        speed_mps=args.speed,
+        max_accel_mps2=args.max_accel,
+        max_yaw_rate_dps=args.max_yaw_rate,
+        min_altitude_m=args.min_altitude,
+        max_altitude_m=args.max_altitude,
+    )
     command_topic = f"swarm/drone/{args.drone_id}/command"
     telemetry_topic = f"swarm/drone/{args.drone_id}/telemetry"
     client = build_mqtt_client(client_id=f"mock-drone-{args.drone_id}")
@@ -98,4 +115,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

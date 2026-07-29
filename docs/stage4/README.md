@@ -1,0 +1,111 @@
+# 阶段四：规则版 Safety Gate 预演
+
+## 目标
+
+先用规则控制器跑通双向安全协议的最小闭环：
+
+1. `safety_gate.py` 订阅 `swarm/drone/+/telemetry`
+2. 根据距离、telemetry 速度和 TTC 计算碰撞风险
+3. 风险过高时向对应无人机发布 `hover` 安全指令
+4. 同时向 `swarm/commander/override` 发布 `safety_override`
+5. FastAPI gateway 通过 `/api/events` 读取 override 事件
+6. Unity 场景显示无人机在危险接近时停下
+
+本阶段暂不训练 ML-Agents，也不依赖 ONNX。规则版 Safety Gate 用于验证协议、日志和可视化链路。
+
+当前 `MockDrone` 已使用带约束运动学模型：`move_to` 不会瞬间改变速度，`hover` 会按 `max_accel_mps2` 刹停。Safety Gate 会优先使用 telemetry 中的真实 `velocity` 字段；如果旧 telemetry 没有 `velocity`，才回退到由当前位置和目标航点推断速度。
+
+## 启动顺序
+
+终端 1：启动 MQTT broker。
+
+```bash
+conda run -n eai-swarm python scripts/dev_broker.py
+```
+
+终端 2：启动 1 号无人机。
+
+```bash
+conda run -n eai-swarm python mock_drone.py --drone-id 1
+```
+
+终端 3：启动 2 号无人机。
+
+```bash
+conda run -n eai-swarm python mock_drone.py --drone-id 2
+```
+
+终端 4：启动 gateway。
+
+```bash
+conda run -n eai-swarm uvicorn gateway:app --host 127.0.0.1 --port 8000
+```
+
+终端 5：启动 Safety Gate。
+
+```bash
+conda run -n eai-swarm python safety_gate.py
+```
+
+Unity：打开 `unity/SwarmUnityDemo`，点击 Play。
+
+## 注入交叉航线
+
+先把两架无人机分开：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":1,"waypoint":[-3,0,1]}'
+
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":2,"waypoint":[3,0,1]}'
+```
+
+等待它们到位后，让它们相向飞行：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":1,"waypoint":[3,0,1]}'
+
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":2,"waypoint":[-3,0,1]}'
+```
+
+预期结果：
+
+1. Safety Gate 日志出现 `override`
+2. Unity 中无人机停止继续接近
+3. gateway 事件接口能看到 `safety_override`
+
+查看事件：
+
+```bash
+curl http://127.0.0.1:8000/api/events
+```
+
+## 可调参数
+
+```bash
+conda run -n eai-swarm python safety_gate.py \
+  --safe-distance 1.5 \
+  --low-threshold 0.35 \
+  --high-threshold 0.75 \
+  --hold-sec 1.0
+```
+
+参数含义：
+
+- `safe-distance`: 安全距离，小于该距离时距离风险升高
+- `low-threshold`: 预警阈值
+- `high-threshold`: 接管阈值
+- `hold-sec`: 触发接管后的最小保持时间
+
+## 测试
+
+```bash
+conda run -n eai-swarm python -m unittest discover -s tests
+```

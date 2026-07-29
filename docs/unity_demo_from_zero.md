@@ -41,7 +41,7 @@ File  Edit  Assets  GameObject  Component  Window  Help
 Unity 项目路径：
 
 ```text
-D:\forum\EAI\project\unity\SwarmUnityDemo
+$root\unity\SwarmUnityDemo
 ```
 
 在 Unity Hub 里：
@@ -51,7 +51,7 @@ D:\forum\EAI\project\unity\SwarmUnityDemo
 3. 选择这个目录：
 
    ```text
-   $(root)\unity\SwarmUnityDemo
+   $root\unity\SwarmUnityDemo
    ```
 
 4. 打开项目，等待 Unity 导入资源和编译脚本。
@@ -127,7 +127,7 @@ SslProtocols.Ssl3 is obsolete
 脚本已经在仓库内置 Unity 项目内，不需要再复制。
 
 ```text
-D:\forum\EAI\project\unity\SwarmUnityDemo\Assets\Scripts\SwarmTelemetry
+$root\unity\SwarmUnityDemo\Assets\Scripts\SwarmTelemetry
   DroneTelemetrySubscriber.cs
   DroneTelemetryView.cs
 ```
@@ -182,7 +182,7 @@ Drone Prefab: empty
 进入项目根目录：
 
 ```bash
-cd /mnt/d/forum/EAI/project
+cd $root
 ```
 
 启动 MQTT broker：
