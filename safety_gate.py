@@ -12,6 +12,7 @@ from swarm.safety import (
     SafetyGate,
     build_hover_command,
     build_override_event,
+    build_status_event,
 )
 
 
@@ -39,10 +40,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=1883)
     parser.add_argument("--qos", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--interval", type=float, default=0.1)
-    parser.add_argument("--safe-distance", type=float, default=1.5)
-    parser.add_argument("--high-threshold", type=float, default=0.75)
-    parser.add_argument("--low-threshold", type=float, default=0.35)
+    parser.add_argument("--safe-distance", type=float, default=1.6)
+    parser.add_argument("--high-threshold", type=float, default=0.70)
+    parser.add_argument("--low-threshold", type=float, default=0.32)
     parser.add_argument("--hold-sec", type=float, default=1.0)
+    parser.add_argument("--status-interval", type=float, default=1.0)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
@@ -60,6 +62,7 @@ def main() -> None:
     gate = SafetyGate(config)
     snapshots: dict[int, DroneSnapshot] = {}
     active_overrides: set[int] = set()
+    last_status_publish = 0.0
     client = build_mqtt_client(client_id="safety-gate")
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
@@ -83,7 +86,17 @@ def main() -> None:
 
     try:
         while True:
+            now = time.monotonic()
             decisions = gate.evaluate(list(snapshots.values()))
+            if decisions and now - last_status_publish >= args.status_interval:
+                for decision in decisions:
+                    client.publish(
+                        "swarm/commander/status",
+                        payload=json.dumps(build_status_event(decision), separators=(",", ":")),
+                        qos=args.qos,
+                    )
+                last_status_publish = now
+
             for decision in decisions:
                 if decision.mode == "override" and decision.drone not in active_overrides:
                     command = build_hover_command(decision)

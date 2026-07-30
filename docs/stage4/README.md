@@ -15,6 +15,9 @@
 
 当前 `MockDrone` 已使用带约束运动学模型：`move_to` 不会瞬间改变速度，`hover` 会按 `max_accel_mps2` 刹停。Safety Gate 会优先使用 telemetry 中的真实 `velocity` 字段；如果旧 telemetry 没有 `velocity`，才回退到由当前位置和目标航点推断速度。
 
+完整演示流程可直接按 [Demo 脚本](./demo_script.md) 执行。
+也可以直接运行 `bash scripts/stage4_demo.sh`。
+
 ## 启动顺序
 
 终端 1：启动 MQTT broker。
@@ -39,12 +42,6 @@ conda run -n eai-swarm python mock_drone.py --drone-id 2
 
 ```bash
 conda run -n eai-swarm uvicorn gateway:app --host 127.0.0.1 --port 8000
-```
-
-终端 5：启动 Safety Gate。
-
-```bash
-conda run -n eai-swarm python safety_gate.py
 ```
 
 Unity：打开 `unity/SwarmUnityDemo`，点击 Play。
@@ -79,7 +76,10 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
 
 1. Safety Gate 日志出现 `override`
 2. Unity 中无人机停止继续接近
-3. gateway 事件接口能看到 `safety_override`
+3. Unity 中对应无人机会短暂变红，表示 `safety_override`
+4. gateway 事件接口能看到 `safety_override`
+
+如果你是第一次跑这个阶段，建议先让两架无人机拉开距离，再启动 Safety Gate。原因是 MockDrone 默认从同一个原点起飞，Safety Gate 太早接入会把“初始重合”当成真实碰撞风险。
 
 查看事件：
 
@@ -87,13 +87,30 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
 curl http://127.0.0.1:8000/api/events
 ```
 
+## Unity 风险可视化
+
+Unity 的 `DroneTelemetrySubscriber` 除了订阅 `swarm/drone/+/telemetry`，还会订阅：
+
+```text
+swarm/commander/status
+swarm/commander/override
+```
+
+显示规则：
+
+- 正常：保持每架无人机的基础颜色
+- `warning` 或风险值超过预警阈值：短暂变黄
+- `safety_override` / `override`：短暂变红
+
+Safety Gate 会周期性发布 `safety_status`，并在接管时发布 `safety_override`。这些消息同时供 gateway `/api/events` 和 Unity 可视化使用。
+
 ## 可调参数
 
 ```bash
 conda run -n eai-swarm python safety_gate.py \
-  --safe-distance 1.5 \
-  --low-threshold 0.35 \
-  --high-threshold 0.75 \
+  --safe-distance 1.6 \
+  --low-threshold 0.32 \
+  --high-threshold 0.70 \
   --hold-sec 1.0
 ```
 
@@ -103,6 +120,8 @@ conda run -n eai-swarm python safety_gate.py \
 - `low-threshold`: 预警阈值
 - `high-threshold`: 接管阈值
 - `hold-sec`: 触发接管后的最小保持时间
+
+当前默认值只做了小幅保守调整：`safe-distance` 从 `1.5m` 增加到 `1.6m`，`high-threshold` 从 `0.75` 降到 `0.70`，`low-threshold` 从 `0.35` 降到 `0.32`。目标是让两架无人机在 Unity demo 里略早刹停，同时避免 Safety Gate 在正常间距下过于频繁接管。
 
 ## 测试
 

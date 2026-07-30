@@ -6,6 +6,7 @@ from swarm.safety import (
     SafetyGate,
     build_hover_command,
     build_override_event,
+    build_status_event,
     pair_collision_risk,
 )
 
@@ -53,6 +54,28 @@ class SafetyRiskTest(unittest.TestCase):
 
 
 class SafetyGateTest(unittest.TestCase):
+    def test_default_gate_warns_before_override_margin(self) -> None:
+        decisions = SafetyGate(SafetyConfig()).evaluate(
+            [
+                DroneSnapshot(1, (0, 0, 1), velocity=(0, 0, 0)),
+                DroneSnapshot(2, (1.0, 0, 1), velocity=(0, 0, 0)),
+            ],
+            now=1.0,
+        )
+
+        self.assertEqual({decision.mode for decision in decisions}, {"warning"})
+
+    def test_default_gate_overrides_static_pair_inside_tuned_margin(self) -> None:
+        decisions = SafetyGate(SafetyConfig()).evaluate(
+            [
+                DroneSnapshot(1, (0, 0, 1), velocity=(0, 0, 0)),
+                DroneSnapshot(2, (0.45, 0, 1), velocity=(0, 0, 0)),
+            ],
+            now=1.0,
+        )
+
+        self.assertEqual({decision.mode for decision in decisions}, {"override"})
+
     def test_gate_emits_override_decision(self) -> None:
         gate = SafetyGate(SafetyConfig(safe_distance_m=1.5, high_threshold=0.75))
         snapshots = [
@@ -65,6 +88,7 @@ class SafetyGateTest(unittest.TestCase):
         self.assertEqual({decision.mode for decision in decisions}, {"override"})
         event = build_override_event(decisions[0])
         self.assertEqual(event["event"], "safety_override")
+        self.assertEqual(event["event_name"], "safety_override")
         self.assertEqual(event["reason"], "collision_risk_exceeded")
         self.assertEqual(event["target_drone"], 2)
         self.assertEqual(event["command_id"], "cmd-1")
@@ -80,6 +104,24 @@ class SafetyGateTest(unittest.TestCase):
         self.assertEqual(command["drone"], 1)
         self.assertEqual(command["action"], "hover")
         self.assertEqual(command["priority"], "safety")
+
+    def test_status_event_exposes_visualization_mode(self) -> None:
+        gate = SafetyGate(SafetyConfig(safe_distance_m=1.5, high_threshold=0.75))
+        decision = gate.evaluate(
+            [
+                DroneSnapshot(1, (0, 0, 1), target=(5, 0, 1), speed_mps=1),
+                DroneSnapshot(2, (0.5, 0, 1), target=(-5, 0, 1), speed_mps=1),
+            ],
+            now=1.0,
+        )[0]
+
+        event = build_status_event(decision)
+
+        self.assertEqual(event["event"], "safety_status")
+        self.assertEqual(event["event_name"], "safety_status")
+        self.assertEqual(event["mode"], "override")
+        self.assertEqual(event["status"], "safety_override")
+        self.assertEqual(event["anomalies"], ["collision_risk"])
 
 
 if __name__ == "__main__":

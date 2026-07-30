@@ -6,9 +6,17 @@ namespace SwarmTelemetry
     {
         [SerializeField] private float smoothing = 8.0f;
         [SerializeField] private bool rotateTowardMotion = true;
+        [SerializeField] private Color normalColor = new Color(0.1f, 0.45f, 0.95f);
+        [SerializeField] private Color warningColor = new Color(0.95f, 0.72f, 0.18f);
+        [SerializeField] private Color overrideColor = new Color(0.95f, 0.2f, 0.16f);
+        [SerializeField] private float warningRiskThreshold = 0.32f;
+        [SerializeField] private float safetyStateHoldSec = 2.0f;
 
         private Vector3 targetPosition;
         private bool hasTarget;
+        private Renderer cachedRenderer;
+        private float safetyStateUntil;
+        private string safetyMode;
 
         public int DroneId { get; private set; }
         public string Status { get; private set; }
@@ -20,6 +28,8 @@ namespace SwarmTelemetry
             targetPosition = transform.position;
             Status = "unknown";
             LastCommandId = "";
+            cachedRenderer = GetComponentInChildren<Renderer>();
+            safetyMode = "normal";
         }
 
         public void ApplyTelemetry(
@@ -37,8 +47,40 @@ namespace SwarmTelemetry
             hasTarget = true;
         }
 
+        public void SetBaseColor(Color color)
+        {
+            normalColor = color;
+            ApplyColor(color);
+        }
+
+        public void ApplySafetyState(string mode, float riskLevel)
+        {
+            safetyMode = string.IsNullOrEmpty(mode) ? "normal" : mode;
+            safetyStateUntil = Time.time + safetyStateHoldSec;
+
+            if (safetyMode == "override" || safetyMode == "safety_override")
+            {
+                ApplyColor(overrideColor);
+                return;
+            }
+
+            if (safetyMode == "warning" || riskLevel >= warningRiskThreshold)
+            {
+                ApplyColor(warningColor);
+                return;
+            }
+
+            ApplyColor(normalColor);
+        }
+
         private void Update()
         {
+            if (safetyMode != "normal" && Time.time > safetyStateUntil)
+            {
+                safetyMode = "normal";
+                ApplyColor(normalColor);
+            }
+
             if (!hasTarget)
             {
                 return;
@@ -57,6 +99,19 @@ namespace SwarmTelemetry
             if (rotateTowardMotion && delta.sqrMagnitude > 0.000001f)
             {
                 transform.rotation = Quaternion.LookRotation(delta.normalized, Vector3.up);
+            }
+        }
+
+        private void ApplyColor(Color color)
+        {
+            if (cachedRenderer == null)
+            {
+                cachedRenderer = GetComponentInChildren<Renderer>();
+            }
+
+            if (cachedRenderer != null)
+            {
+                cachedRenderer.material.color = color;
             }
         }
     }

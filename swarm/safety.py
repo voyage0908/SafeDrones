@@ -32,11 +32,11 @@ def _as_vector3(value: Any, field_name: str) -> Vector3:
 
 @dataclass(frozen=True)
 class SafetyConfig:
-    safe_distance_m: float = 1.5
+    safe_distance_m: float = 1.6
     ttc_safe_sec: float = 3.0
     max_speed_mps: float = 2.0
-    low_threshold: float = 0.35
-    high_threshold: float = 0.75
+    low_threshold: float = 0.32
+    high_threshold: float = 0.70
     release_threshold: float = 0.25
     hold_sec: float = 1.0
 
@@ -202,11 +202,26 @@ def build_override_event(decision: SafetyDecision) -> dict[str, Any]:
     return {
         "drone": decision.drone,
         "event": "safety_override",
+        "event_name": "safety_override",
         "reason": decision.reason or "collision_risk_exceeded",
         "risk_level": round(decision.risk_level, 4),
         "target_drone": decision.target_drone,
         "diverted_from": list(decision.diverted_from) if decision.diverted_from is not None else None,
         "estimated_recovery": decision.estimated_recovery,
         "command_id": decision.command_id,
+        "timestamp_ms": decision.timestamp_ms,
+    }
+
+
+def build_status_event(decision: SafetyDecision) -> dict[str, Any]:
+    return {
+        "drone": decision.drone,
+        "event": "safety_status",
+        "event_name": "safety_status",
+        "mode": decision.mode,
+        "risk_level": round(decision.risk_level, 4),
+        "target_drone": decision.target_drone,
+        "status": "safety_override" if decision.mode == "override" else decision.mode,
+        "anomalies": ["collision_risk"] if decision.mode == "override" else [],
         "timestamp_ms": decision.timestamp_ms,
     }
