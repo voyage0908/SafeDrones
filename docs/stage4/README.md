@@ -1,4 +1,4 @@
-# 阶段四：规则版 Safety Gate 预演
+# 阶段四：Safety Gate 与 MARL Pilot 预演
 
 ## 目标
 
@@ -11,12 +11,13 @@
 5. FastAPI gateway 通过 `/api/events` 读取 override 事件
 6. Unity 场景显示无人机在危险接近时停下
 
-本阶段暂不训练 ML-Agents，也不依赖 ONNX。规则版 Safety Gate 用于验证协议、日志和可视化链路。
+当前可视化 demo 不依赖 ML-Agents 或 ONNX。规则版 Safety Gate 用于验证协议、日志和可视化链路；MARL 训练 scaffold 已单独补充，后续可导出 ONNX 后接入 `marl_pilot.py`。
 
 当前 `MockDrone` 已使用带约束运动学模型：`move_to` 不会瞬间改变速度，`hover` 会按 `max_accel_mps2` 刹停。Safety Gate 会优先使用 telemetry 中的真实 `velocity` 字段；如果旧 telemetry 没有 `velocity`，才回退到由当前位置和目标航点推断速度。
 
 完整演示流程可直接按 [Demo 脚本](./demo_script.md) 执行。
 也可以直接运行 `bash scripts/stage4_demo.sh`。
+阶段四的 MARL 训练 scaffold 见 [MARL 训练说明](./marl_training.md)。
 
 ## 启动顺序
 
