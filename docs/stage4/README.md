@@ -6,14 +6,16 @@
 
 1. `safety_gate.py` 订阅 `swarm/drone/+/telemetry`
 2. 根据距离、telemetry 速度和 TTC 计算碰撞风险
-3. 风险过高时向对应无人机发布 `hover` 安全指令
+3. 风险过高时向对应无人机发布最小干预的安全分离 `move_to` setpoint；没有可用分离点时回退到 `hover`
 4. 同时向 `swarm/commander/override` 发布 `safety_override`
 5. FastAPI gateway 通过 `/api/events` 读取 override 事件
-6. Unity 场景显示无人机在危险接近时停下
+6. Unity 场景显示无人机在危险接近时短时分离，并在风险解除后恢复追踪目标
 
 当前可视化 demo 不依赖 ML-Agents 或 ONNX。规则版 Safety Gate 用于验证协议、日志和可视化链路；MARL 训练 scaffold 已单独补充，后续可导出 ONNX 后接入 `marl_pilot.py`。
 
 当前 `MockDrone` 已使用带约束运动学模型：`move_to` 不会瞬间改变速度，`hover` 会按 `max_accel_mps2` 刹停。Safety Gate 会优先使用 telemetry 中的真实 `velocity` 字段；如果旧 telemetry 没有 `velocity`，才回退到由当前位置和目标航点推断速度。
+
+当前 Safety Gate 不做完整路径规划。它只在 `override` 状态下生成短时安全分离 setpoint，把无人机带出高风险区域；风险低于释放阈值后停止覆盖，低层 Pilot 继续追踪缓存的高层目标。若多次接管仍无法释放，后续 C4 Replanner 再负责生成任务级绕行点或换机策略。
 
 完整演示流程可直接按 [Demo 脚本](./demo_script.md) 执行。
 也可以直接运行 `bash scripts/stage4_demo.sh`。
@@ -76,7 +78,7 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
 预期结果：
 
 1. Safety Gate 日志出现 `override`
-2. Unity 中无人机停止继续接近
+2. Unity 中无人机沿安全分离方向错开，并随后继续前往目标点
 3. Unity 中对应无人机会短暂变红，表示 `safety_override`
 4. gateway 事件接口能看到 `safety_override`
 
@@ -110,6 +112,7 @@ Safety Gate 会周期性发布 `safety_status`，并在接管时发布 `safety_o
 ```bash
 conda run -n eai-swarm python safety_gate.py \
   --safe-distance 1.6 \
+  --escape-distance 1.2 \
   --low-threshold 0.32 \
   --high-threshold 0.70 \
   --hold-sec 1.0
@@ -118,14 +121,27 @@ conda run -n eai-swarm python safety_gate.py \
 参数含义：
 
 - `safe-distance`: 安全距离，小于该距离时距离风险升高
+- `escape-distance`: 接管时发布的短时安全分离 setpoint 距离
 - `low-threshold`: 预警阈值
 - `high-threshold`: 接管阈值
 - `hold-sec`: 触发接管后的最小保持时间
 
-当前默认值只做了小幅保守调整：`safe-distance` 从 `1.5m` 增加到 `1.6m`，`high-threshold` 从 `0.75` 降到 `0.70`，`low-threshold` 从 `0.35` 降到 `0.32`。目标是让两架无人机在 Unity demo 里略早刹停，同时避免 Safety Gate 在正常间距下过于频繁接管。
+当前默认值只做了小幅保守调整：`safe-distance` 从 `1.5m` 增加到 `1.6m`，`high-threshold` 从 `0.75` 降到 `0.70`，`low-threshold` 从 `0.35` 降到 `0.32`。目标是让两架无人机在 Unity demo 里略早触发安全分离，同时避免 Safety Gate 在正常间距下过于频繁接管。
 
 ## 测试
 
 ```bash
 conda run -n eai-swarm python -m unittest discover -s tests
 ```
+
+## Benchmark
+
+```bash
+conda run -n eai-swarm python scripts/stage4_benchmark.py \
+  --scenario head_on_crossing \
+  --conditions C2,C3 \
+  --seeds 10 \
+  --out results/stage4
+```
+
+该命令会自动启动 broker、两架 MockDrone、`marl_pilot.py` 和 `safety_gate.py`，并在 `results/stage4/...` 下落盘 `runs.jsonl` 与 `summary.csv`。当前基准场景中，C2 会稳定失败，C3 会稳定完成交叉并保持安全距离。

@@ -1,4 +1,5 @@
 import unittest
+from math import dist
 
 from swarm.safety import (
     DroneSnapshot,
@@ -6,6 +7,7 @@ from swarm.safety import (
     SafetyGate,
     build_hover_command,
     build_override_event,
+    build_safety_command,
     build_status_event,
     pair_collision_risk,
 )
@@ -93,6 +95,20 @@ class SafetyGateTest(unittest.TestCase):
         self.assertEqual(event["target_drone"], 2)
         self.assertEqual(event["command_id"], "cmd-1")
 
+    def test_gate_override_includes_safety_waypoint_that_increases_separation(self) -> None:
+        gate = SafetyGate(SafetyConfig(safe_distance_m=1.5, high_threshold=0.75, escape_distance_m=1.2))
+        peer_position = (0.5, 0, 1)
+        decision = gate.evaluate(
+            [
+                DroneSnapshot(1, (0, 0, 1), target=(5, 0, 1), speed_mps=1, last_command_id="cmd-1"),
+                DroneSnapshot(2, peer_position, target=(-5, 0, 1), speed_mps=1, last_command_id="cmd-2"),
+            ],
+            now=1.0,
+        )[0]
+
+        self.assertIsNotNone(decision.safety_waypoint)
+        self.assertGreater(dist(decision.safety_waypoint, peer_position), dist(decision.position, peer_position))
+
     def test_hover_command_targets_drone(self) -> None:
         decision = SafetyGate(SafetyConfig()).evaluate(
             [DroneSnapshot(1, (0, 0, 1), target=(1, 0, 1), speed_mps=1)],
@@ -104,6 +120,22 @@ class SafetyGateTest(unittest.TestCase):
         self.assertEqual(command["drone"], 1)
         self.assertEqual(command["action"], "hover")
         self.assertEqual(command["priority"], "safety")
+
+    def test_safety_command_uses_diversion_waypoint_when_available(self) -> None:
+        decision = SafetyGate(SafetyConfig(safe_distance_m=1.5, high_threshold=0.75)).evaluate(
+            [
+                DroneSnapshot(1, (0, 0, 1), target=(5, 0, 1), speed_mps=1, last_command_id="cmd-1"),
+                DroneSnapshot(2, (0.5, 0, 1), target=(-5, 0, 1), speed_mps=1, last_command_id="cmd-2"),
+            ],
+            now=1.0,
+        )[0]
+
+        command = build_safety_command(decision)
+
+        self.assertEqual(command["drone"], 1)
+        self.assertEqual(command["action"], "move_to")
+        self.assertEqual(command["priority"], "safety")
+        self.assertEqual(command["target"], list(decision.safety_waypoint))
 
     def test_status_event_exposes_visualization_mode(self) -> None:
         gate = SafetyGate(SafetyConfig(safe_distance_m=1.5, high_threshold=0.75))

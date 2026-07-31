@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 logs/
+results/
 deepseek_api_key
 .vscode
 

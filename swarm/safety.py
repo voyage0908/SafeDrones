@@ -16,12 +16,27 @@ def _sub(a: Vector3, b: Vector3) -> Vector3:
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
 
+def _add(a: Vector3, b: Vector3) -> Vector3:
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def _scale(a: Vector3, value: float) -> Vector3:
+    return (a[0] * value, a[1] * value, a[2] * value)
+
+
 def _dot(a: Vector3, b: Vector3) -> float:
     return sum(a_i * b_i for a_i, b_i in zip(a, b))
 
 
 def _norm(a: Vector3) -> float:
     return math.sqrt(_dot(a, a))
+
+
+def _normalize(a: Vector3) -> Vector3:
+    length = _norm(a)
+    if length == 0:
+        return (0.0, 0.0, 0.0)
+    return (a[0] / length, a[1] / length, a[2] / length)
 
 
 def _as_vector3(value: Any, field_name: str) -> Vector3:
@@ -35,6 +50,7 @@ class SafetyConfig:
     safe_distance_m: float = 1.6
     ttc_safe_sec: float = 3.0
     max_speed_mps: float = 2.0
+    escape_distance_m: float = 1.2
     low_threshold: float = 0.32
     high_threshold: float = 0.70
     release_threshold: float = 0.25
@@ -83,6 +99,7 @@ class PairRisk:
     approach_mps: float
     ttc_sec: float | None
     risk: float
+    target_position: Vector3 | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +112,7 @@ class SafetyDecision:
     command_id: str | None
     position: Vector3
     diverted_from: Vector3 | None
+    safety_waypoint: Vector3 | None
     estimated_recovery: float
     timestamp_ms: int
 
@@ -119,7 +137,7 @@ def pair_collision_risk(a: DroneSnapshot, b: DroneSnapshot, config: SafetyConfig
     relative_position = _sub(b.position, a.position)
     separation = _norm(relative_position)
     if separation == 0:
-        return PairRisk(a.drone_id, b.drone_id, 0.0, config.max_speed_mps, 0.0, 1.0)
+        return PairRisk(a.drone_id, b.drone_id, 0.0, config.max_speed_mps, 0.0, 1.0, b.position)
 
     relative_velocity = _sub(velocity_toward_target(a), velocity_toward_target(b))
     approach_speed = _clip(_dot(relative_velocity, relative_position) / separation, 0.0, config.max_speed_mps)
@@ -129,7 +147,26 @@ def pair_collision_risk(a: DroneSnapshot, b: DroneSnapshot, config: SafetyConfig
     velocity_risk = _clip(approach_speed / config.max_speed_mps)
     ttc_risk = _clip(1.0 - (ttc or config.ttc_safe_sec) / config.ttc_safe_sec) if ttc is not None else 0.0
     risk = _clip(max(distance_risk, distance_risk * velocity_risk, ttc_risk))
-    return PairRisk(a.drone_id, b.drone_id, separation, approach_speed, ttc, risk)
+    return PairRisk(a.drone_id, b.drone_id, separation, approach_speed, ttc, risk, b.position)
+
+
+def safety_diversion_waypoint(snapshot: DroneSnapshot, pair: PairRisk, config: SafetyConfig) -> Vector3:
+    if pair.target_position is None:
+        return snapshot.position
+
+    away = _sub(snapshot.position, pair.target_position)
+    horizontal_away = (away[0], away[1], 0.0)
+    if _norm(horizontal_away) == 0:
+        horizontal_away = (0.0, 1.0 if snapshot.drone_id <= pair.target_drone else -1.0, 0.0)
+
+    away_dir = _normalize(horizontal_away)
+    lateral_dir = _normalize((-away_dir[1], away_dir[0], 0.0))
+    safety_dir = _normalize(_add(_scale(away_dir, 0.45), _scale(lateral_dir, 0.90)))
+    if _norm(safety_dir) == 0:
+        safety_dir = away_dir
+
+    escape_distance = max(config.escape_distance_m, config.safe_distance_m * 0.75)
+    return _add(snapshot.position, _scale(safety_dir, escape_distance))
 
 
 class SafetyGate:
@@ -146,6 +183,11 @@ class SafetyGate:
             risk = worst.risk if worst else 0.0
             mode = self._mode(snapshot.drone_id, risk, now)
             reason = "collision_risk_exceeded" if mode == "override" else None
+            safety_waypoint = (
+                safety_diversion_waypoint(snapshot, worst, self.config)
+                if mode == "override" and worst is not None
+                else None
+            )
             decisions.append(
                 SafetyDecision(
                     drone=snapshot.drone_id,
@@ -156,6 +198,7 @@ class SafetyGate:
                     command_id=snapshot.last_command_id,
                     position=snapshot.position,
                     diverted_from=snapshot.target,
+                    safety_waypoint=safety_waypoint,
                     estimated_recovery=self.config.hold_sec if mode == "override" else 0.0,
                     timestamp_ms=int(time.time_ns() // 1_000_000),
                 )
@@ -194,6 +237,25 @@ def build_hover_command(decision: SafetyDecision) -> dict[str, Any]:
         "confidence": 1.0,
         "command_id": f"safety-hover-{decision.timestamp_ms}-{decision.drone}",
         "reason": decision.reason or "safety_gate",
+        "timestamp_ms": decision.timestamp_ms,
+    }
+
+
+def build_safety_command(decision: SafetyDecision) -> dict[str, Any]:
+    if decision.safety_waypoint is None:
+        return build_hover_command(decision)
+
+    return {
+        "drone": decision.drone,
+        "action": "move_to",
+        "target": list(decision.safety_waypoint),
+        "waypoint": list(decision.safety_waypoint),
+        "priority": "safety",
+        "confidence": 1.0,
+        "ttl_sec": max(0.5, decision.estimated_recovery),
+        "command_id": f"safety-divert-{decision.timestamp_ms}-{decision.drone}",
+        "reason": decision.reason or "safety_gate",
+        "rationale": "minimum-intervention safety diversion",
         "timestamp_ms": decision.timestamp_ms,
     }
 

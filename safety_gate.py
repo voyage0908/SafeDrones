@@ -10,7 +10,7 @@ from swarm.safety import (
     DroneSnapshot,
     SafetyConfig,
     SafetyGate,
-    build_hover_command,
+    build_safety_command,
     build_override_event,
     build_status_event,
 )
@@ -41,6 +41,7 @@ def main() -> None:
     parser.add_argument("--qos", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--interval", type=float, default=0.1)
     parser.add_argument("--safe-distance", type=float, default=1.6)
+    parser.add_argument("--escape-distance", type=float, default=1.2)
     parser.add_argument("--high-threshold", type=float, default=0.70)
     parser.add_argument("--low-threshold", type=float, default=0.32)
     parser.add_argument("--hold-sec", type=float, default=1.0)
@@ -55,6 +56,7 @@ def main() -> None:
 
     config = SafetyConfig(
         safe_distance_m=args.safe_distance,
+        escape_distance_m=args.escape_distance,
         low_threshold=args.low_threshold,
         high_threshold=args.high_threshold,
         hold_sec=args.hold_sec,
@@ -99,7 +101,7 @@ def main() -> None:
 
             for decision in decisions:
                 if decision.mode == "override" and decision.drone not in active_overrides:
-                    command = build_hover_command(decision)
+                    command = build_safety_command(decision)
                     event = build_override_event(decision)
                     client.publish(
                         f"swarm/drone/{decision.drone}/command",
