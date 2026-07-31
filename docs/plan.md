@@ -183,14 +183,38 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 
 ## 实验设计
 
+### Benchmark 对齐策略
+
+为避免仅在自定义 Unity demo 中验证而形成"自说自话"，实验设计采用三层 Benchmark 结构。本文不把私有场景中的一次演示作为主要证据，而是把双向安全协议放到固定场景、公共环境和可复现消融中共同验证。
+
+| 层级 | 作用 | 候选环境/任务 | 主要回答的问题 |
+|------|------|---------------|----------------|
+| 公共 MARL / SafeRL 层 | 验证低层多智能体导航与安全约束能力 | VMAS、PettingZoo/MPE、Safety-Gymnasium | 低层 Pilot 与 Safety Gate 是否在标准化多智能体避障任务中降低碰撞/约束违反 |
+| 无人机动力学层 | 验证无人机运动约束下的可迁移性 | gym-pybullet-drones、Unity/Crazyflie 近似动力学 | 策略在速度、加速度、高度和刹车距离约束下是否仍然有效 |
+| 系统协议层 | 验证 LLM Commander、Pilot、Safety Gate、上行反馈的接口贡献 | MockDrone/Unity 固定场景套件 | C2/C3/C4 消融中，Safety Gate 与反馈通道分别贡献多少 |
+
+所有系统协议实验必须固定场景定义、随机种子、日志 schema 和指标计算脚本。至少包含以下场景：
+
+| 场景 | 描述 | 目标 |
+|------|------|------|
+| `head_on_crossing` | 两机相向交换位置 | 验证正面对冲风险检测、避让和恢复 |
+| `perpendicular_crossing` | 两机垂直航线交叉 | 验证 TTC 风险和侧向避让 |
+| `narrow_passage` | 多机通过狭窄通道 | 验证拥挤环境下的排队/让行 |
+| `moving_obstacle` | 移动障碍物穿过航线 | 验证动态障碍物风险 |
+| `geofence_violation` | LLM 下发越界航点 | 验证软围栏和拒绝/改写逻辑 |
+| `llm_timeout` | LLM 响应延迟 3-5 秒 | 验证无新指令时的安全保持 |
+| `packet_loss` | 随机丢弃 MQTT 消息 | 验证协议在不可靠通信下的鲁棒性 |
+
+这样论文贡献可以表述为：不是提出一个孤立 demo，而是在已有 MARL/SafeRL/无人机仿真 Benchmark 之上，给 LLM-MARL 分层控制系统补充一套可审计的安全协议评测方法。
+
 ### 核心消融实验
 
 为验证双向安全协议的贡献，设计以下消融条件：
 
-| 条件 | LLM→MARL | MARL→LLM 反馈 | Safety Gate | 说明 |
+| 条件 | LLM→Pilot | Pilot→LLM 反馈 | Safety Gate | 说明 |
 |------|----------|--------------|-------------|------|
 | **C0** (纯 LLM) | 直接控制 | 无 | 无 | 纯 LLM 输出动作，作为仿真中的危险 Baseline；真机只允许限速近失测试 |
-| **C1** (纯 MARL) | 无 LLM | 无 | 无 | 纯 MARL 自主导航 + 防撞 |
+| **C1** (纯 Pilot) | 无 LLM | 无 | 无 | 规则 Pilot 或 MARL Pilot 自主导航 + 防撞 |
 | **C2** (单向分层) | 航点 | 无 | 无 | 复现 RALLY/CogSyn 等现有方案 |
 | **C3** (单向 + Gate) | 航点 | 无 | ✅ | 仅加 Safety Gate，无反馈 |
 | **C4** (双向完整) | 航点 | ✅ 反馈 | ✅ | 本方案的完整版本 |
@@ -201,7 +225,7 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 |------|------|----------|
 | 碰撞率 (Collision Rate) | 每飞行小时的多机碰撞次数 | C4 < C2 < C0 |
 | 任务完成率 (Task Success Rate) | LLM 战术目标的达成比例 | C4 ≥ C2 |
-| 端到端延迟 (Latency Breakdown) | VLM 推理 → MQTT 传输 → MARL 推理 → 动作执行 的分段时延 | 量化各段贡献 |
+| 端到端延迟 (Latency Breakdown) | VLM 推理 → MQTT 传输 → Pilot/MARL 推理 → Safety Gate 判断 → 动作执行 的分段时延 | 量化各段贡献 |
 | 安全接管次数 (Override Count) | Safety Gate 每小时触发次数 | C3, C4 有统计，C0/C1/C2 无此概念 |
 | LLM 指令修正率 (Command Revision Rate) | LLM 收到反馈后调整战术的比例 | 仅 C4 有，衡量反馈的实际效用 |
 | 偏离-恢复时间 (Diversion-Recovery Time) | 从接管发生到恢复正常追随的时间 | C4 < C3（有反馈后 LLM 主动调整更快恢复） |
@@ -269,18 +293,23 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
     2. **数据解析与渲染**：编写 C# 脚本挂载到模型上，连接本地的 Mosquitto，订阅 `swarm/drone/+/telemetry`。每次收到 JSON 数据，提取 X, Y, Z 并赋值给虚拟物体的 `transform.position`（使用 `Vector3.Lerp` 保证移动平滑）。
     3. **阶段验证**：启动系统（Mock Drone + 网关 + Unity），对着网关发送文字指令，Unity 里的模型会平滑飞向目标点。
 
-### 阶段四：MARL 低层防撞模型与 Safety Gate 预演 (约 2-3 天)
+### 阶段四：Benchmark 化 Safety Gate 与低层 Pilot 消融预演 (约 2-3 天)
 
-- **目标**：在 Unity 中搭建 MARL 环境，训练高频防撞策略，并实现 Safety Gate 门控逻辑。
+- **目标**：先建立可复现的安全协议 Benchmark 和 C2/C3/C4 消融流程，再把 MARL/ONNX 作为可替换低层 Pilot 接入。阶段四的第一优先级不是训练出复杂 MARL，而是证明 Safety Gate 和上行反馈的贡献可以被稳定测量。
 - **具体任务**：
-    1. **MARL 环境搭建**：在 Unity 中引入 **ML-Agents** 插件。设置 2-4 架虚拟无人机，并定义状态空间（自身位置、队友位置、目标航点）与动作空间（高频速度向量）。
-    2. **定义安全奖励函数**：设定"安全追踪航点"的奖励机制——向目标靠拢得正分（+1.0），多机间距过近或发生碰撞扣除重分（-10.0）。
-    3. **【新增】实现 Safety Gate 模块**：编写 `safety_gate.py`，维护独立于 MARL 策略网络的碰撞风险评估器。第一版可用规则/CBF/人工势场实现 $u_{\text{safety}}$，确保在 MARL 未收敛时也能完成安全实验；随后再接入 MARL 策略网络。
-    4. **【新增】实现碰撞风险评估器**：基于多机相对距离、接近速率和预测碰撞时间（TTC），实时计算 `collision_risk ∈ [0, 1]`。
-    5. **模型导出**：在 Unity 仿真环境中进行加速训练，待避障策略收敛后，导出训练好的策略网络为 **`.onnx` 格式**，并固定 observation/action schema，保证 Python `onnxruntime` 推理端与 Unity 训练端一致。
-    6. **阶段验证**：
-        - 编写 Python 脚本调用 `onnxruntime` 加载模型，模拟多台 `mock_drone.py` 在收到极近的交叉目标时，MARL 模型或规则安全控制器输出安全速度向量，在 Unity 中验证多机无碰撞交叉运行。
-        - **【新增】Safety Gate 触发测试**：故意注入碰撞航线，验证 gate 能否正确检测风险、平滑切换模式、并发送上行通知。
+    1. **固定 Benchmark 场景与数据格式**：定义 `head_on_crossing`、`perpendicular_crossing`、`narrow_passage`、`moving_obstacle`、`geofence_violation`、`llm_timeout`、`packet_loss` 等场景。每个场景固定初始位置、目标点、障碍物、随机种子、运行时长和成功条件。
+    2. **实现统一指标与日志**：每轮实验落盘 JSONL 事件日志和 CSV 指标，至少包含 `collision_count`、`near_miss_count`、`min_distance_m`、`ttc_violation_count`、`task_success`、`override_count`、`recovery_time_sec`、`path_efficiency`、`latency_breakdown`、`command_revision_rate`。
+    3. **实现 C2/C3/C4 runner**：C2 为单向分层（Pilot 追随 LLM 航点，无 Gate）；C3 为单向 + Safety Gate（有否决但无 LLM 反馈重规划）；C4 为完整双向协议（Gate 触发后向 LLM/Pseudo-LLM Replanner 上报，随后重发绕行或换机指令）。
+    4. **完善 Safety Gate 模块**：编写并测试 `safety_gate.py`，维护独立于 MARL 策略网络的碰撞风险评估器。第一版使用规则/CBF/人工势场实现 $u_{\text{safety}}$，必须避免"只悬停不恢复"的死锁；高风险时接管，风险下降后恢复追踪。
+    5. **实现碰撞风险评估器**：基于多机相对距离、接近速率、预测碰撞时间（TTC）和软围栏约束，实时计算 `collision_risk ∈ [0, 1]`，并记录触发对象、风险来源和恢复耗时。
+    6. **实现低层 Pilot 基线**：先提供 Rule Pilot 作为可解释基线，输出高频速度向量或短周期安全 setpoint；再预留 MARL Pilot 接口，保证 observation/action schema 固定。
+    7. **公共 Benchmark 对齐**：至少选择一个公共环境（VMAS/PettingZoo/MPE/Safety-Gymnasium/gym-pybullet-drones）复现同类 crossing 或 navigation 任务，并用相同指标记录 Rule Pilot / MARL Pilot / Safety Gate 的差异。
+    8. **MARL/ONNX 后置接入**：在 Benchmark harness 稳定后，再在 Unity ML-Agents、VMAS 或 gym-pybullet-drones 中训练 MARL Pilot。收敛后导出 `.onnx`，用 Python `onnxruntime` 接入 `marl_pilot.py`，与 Rule Pilot 在同一套场景中对比。
+    9. **阶段验证**：
+        - 固定交叉航线场景中，C3 必须触发 Safety Gate、保持最小安全距离，并能在风险解除后继续完成任务；
+        - C3 vs C2 至少完成 10 个随机种子统计，输出碰撞率/近失率/接管次数/恢复时间对比；
+        - C4 至少用规则 Replanner 或 LLM 反馈上下文完成一次"收到 override 后重新规划"闭环；
+        - Unity 可视化能展示正常、预警、接管和恢复状态。
 
 ---
 
@@ -334,41 +363,43 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 
 ---
 
-### 第四天：Safety Gate + 双向安全协议实机部署与验证（核心实验）
+### 第四天：Benchmark 化 Safety Gate + 双向安全协议部署与验证（核心实验）
 
 #### 1. 课题描述
-在第三天的单向分层架构基础上，部署本方案的核心创新——**双向安全协议**。加载 Safety Gate 模块与 MQTT 反向反馈通道，验证当 LLM 下发危险指令时，低层 Pilot 能够显式接管控制权并向上通报。
-工作流程：1. 将 Unity 导出的 `.onnx` MARL 模型或规则安全控制器加载至 Python 边缘控制网关；2. 部署 Safety Gate 模块（碰撞风险评估器 + β 平滑切换逻辑）；3. 编写本地高频控制回路（20Hz-50Hz），持续注入无人机当前坐标和 VLM 的宏观目标点，MQTT 只负责低频命令和事件；4. 配置 MQTT 反向通道，使 Pilot 在接管事件时向 LLM 网关发送 `override` 和 `status` 消息；5. **对比实验**：在仿真中复现第三天中导致碰撞的危险指令场景，在单台真机上复现虚拟障碍、越界航点或过近目标点，验证 Safety Gate 能否阻止危险动作。
+在第三天的单向分层架构基础上，部署本方案的核心创新——**双向安全协议**，并把验证方式从单次 demo 改为固定 Benchmark 消融。加载 Safety Gate 模块、低层 Pilot 和 MQTT 反向反馈通道，验证当 LLM 下发危险指令时，低层 Pilot 能够显式接管控制权、上报原因，并在风险解除后恢复任务。
+工作流程：1. 使用规则 Pilot 作为第一版低层控制基线，后续可替换为 ONNX MARL Pilot；2. 部署 Safety Gate 模块（碰撞风险评估器 + β 平滑切换/安全恢复逻辑）；3. 编写本地高频控制回路（20Hz-50Hz），持续注入无人机当前坐标和 VLM 的宏观目标点，MQTT 只负责低频命令和事件；4. 配置 MQTT 反向通道，使 Pilot 在接管事件时向 LLM 网关发送 `override` 和 `status` 消息；5. 在固定 Benchmark 场景中运行 C2/C3/C4 消融，复现第三天中导致碰撞的危险指令；6. 在单台真机上只复现虚拟障碍、越界航点或过近目标点等受控危险输入，验证 Safety Gate 能否阻止危险动作并记录 Sim-to-Real 数据。
 
 #### 2. 课题目的
-验证双向安全协议的有效性——Safety Gate 能否可靠检测碰撞风险并接管，LLM 收到反馈后能否调整后续战术。掌握安全控制器/策略网络在仿真与真机边缘网关中的部署，实现分层控制架构中低层安全否决权的落地。
+验证双向安全协议的有效性，并保证结果可复现、可对比。核心问题包括：Safety Gate 能否可靠检测风险并接管；接管是否会导致任务死锁；上行反馈是否能降低恢复时间；同一危险场景下 C3/C4 相比 C2 是否显著降低碰撞率和近失率。
 
 #### 3. 验收评分
-- **基础技能（60分）**：在 Python 边缘控制网关中成功导入 ONNX 格式的 MARL 模型或规则安全控制器并部署 Safety Gate 模块，跑通 C3 条件（单向 + Gate）的仿真多机控制流程。单台真机能完成越界航点拒绝、限速悬停或虚拟障碍避让，MQTT 反向通道能正确发送覆盖通知。
-- **进阶技能（80分）**：完成 C3 vs C2 的消融对比实验。多机相撞航点在 MockDrone/Unity 中复现；单台真机只执行虚拟障碍、软围栏、过近目标点等受控危险输入。在 C2 下记录风险升高或软围栏拦截，在 C3 下门控主动触发接管。记录并对比碰撞率/近失率、安全接管次数与恢复时间。
-- **卓越技能（100分）**：完成 **C4（双向完整协议）**的全链路验证。VLM 在收到 Pilot 回传的覆盖通知后，能据此调整后续战术（如重新规划绕行路线或替换执行机；真机只有一台时，替换执行机在仿真中验证）。采集完整的仿真消融实验数据（C0-C4 五组），产出包含碰撞率对比、安全接管统计、偏离-恢复时间、LLM 指令修正率等指标的学术图表。真机侧采集单机 Sim-to-Real 鲁棒性数据，包括定位噪声、延迟、软围栏触发和紧急悬停/降落事件。
+- **基础技能（60分）**：在 Python 边缘控制网关中成功部署规则 Pilot + Safety Gate，跑通 C3 条件（单向 + Gate）的仿真多机控制流程。Safety Gate 能发布 `safety_override` 和 `safety_status`，并在固定交叉航线中保持最小安全距离。单台真机能完成越界航点拒绝、限速悬停或虚拟障碍避让。
+- **进阶技能（80分）**：完成 C3 vs C2 的固定 Benchmark 消融对比。多机相撞航点在 MockDrone/Unity 中复现；C2 记录碰撞/近失/风险升高，C3 记录主动接管、最小距离、恢复时间和任务完成率。每个核心场景至少运行 10 个随机种子，并导出 JSONL/CSV 结果。
+- **卓越技能（100分）**：完成 **C4（双向完整协议）**的全链路验证。VLM 或规则 Replanner 在收到 Pilot 回传的覆盖通知后，能据此调整后续战术（如重新规划绕行路线或替换执行机；真机只有一台时，替换执行机在仿真中验证）。采集 C0-C4 五组仿真消融数据，并至少接入一个公共 Benchmark 环境用于外部对齐。产出包含碰撞率对比、安全接管统计、偏离-恢复时间、LLM 指令修正率等指标的学术图表。
 
 ---
 
-### 第五天：仿真集群对抗、Benchmark 扩展与科研数据整合
+### 第五天：MARL/ONNX Pilot 接入、Benchmark 扩展与科研数据整合
 
 #### 1. 课题描述
-在 Unity 数字孪生战场中开展最终的多机集群对抗（4v4），在更大规模下验证双向安全协议的可扩展性。同时运行多组 Baseline 条件完成 Benchmark 数据采集，系统性整理全部科研数据。
+在第四天已经稳定的 Benchmark harness 上接入真正的 MARL/ONNX Pilot，并开展最终的多机集群对抗（4v4）。第五天不再从零开始设计 Benchmark，而是扩大场景规模、补公共环境对齐、采集多种 Pilot 和协议条件下的数据，系统性整理科研结果。
 工作流程：
-1. 开启全仿真链路：Unity 场景渲染画面 → VLM 接收图像生成战术航点 → 航点下发至 MARL + Safety Gate → MARL 结合多机状态高频输出控制量 → 驱动 Unity 仿真无人机集群（4v4）协同围堵移动目标；
-2. 在 Unity 环境中开展对抗演练："红军（传统规则/人类玩家操控）vs 蓝军（分层 AI 控制集群 + Safety Gate）"；
-3. **Benchmark 扩展**：在 Unity 仿真中运行完整的五组消融条件（C0-C4），每组采集多轮对抗数据；
-4. 运行仿真数据采集系统，导出三维轨迹、决策时延、碰撞率、安全接管统计与对战胜率，完成科研闭环。
+1. 在 Unity ML-Agents、VMAS 或 gym-pybullet-drones 中训练低层 MARL Pilot，固定 observation/action schema；
+2. 导出 `.onnx` 策略网络，并用 Python `onnxruntime` 接入 `marl_pilot.py`；
+3. 在同一套 Benchmark 场景中对比 Rule Pilot、Rule Pilot + Gate、MARL Pilot、MARL Pilot + Gate、C4 双向协议；
+4. 开启全仿真链路：Unity 场景渲染画面 → VLM 接收图像生成战术航点 → 航点下发至 Pilot + Safety Gate → Pilot 结合多机状态高频输出控制量 → 驱动 Unity 仿真无人机集群（4v4）协同围堵移动目标；
+5. 在 Unity 环境中开展对抗演练："红军（传统规则/人类玩家操控）vs 蓝军（分层 AI 控制集群 + Safety Gate）"；
+6. 运行仿真数据采集系统，导出三维轨迹、决策时延、碰撞率、安全接管统计与对战胜率，完成科研闭环。
 
 #### 2. 课题目的
-实现复杂智能系统在数字孪生环境中的全链路集成，完成系统性 Benchmark 评价，整理科研成果图表。
+实现复杂智能系统在数字孪生环境中的全链路集成，验证 MARL Pilot 相比规则 Pilot 的增益，并完成系统性 Benchmark 评价与科研成果图表整理。
 
 #### 3. 验收评分
-- **基础技能（60分）**：完成 Unity 仿真全链路系统联调。4 架以上虚拟无人机能够稳定运行在分层控制 + Safety Gate 架构下，系统无崩溃或消息死锁。
-- **进阶技能（80分）**：完成五组消融条件的 Benchmark 数据采集（C0-C4）。在 Unity 对抗中展现出 Safety Gate 带来的明显安全提升——碰撞率显著下降，同时任务完成率不降或微降。导出碰撞率对比柱状图、安全接管统计表、端到端延迟拆解图。
-- **卓越技能（100分）**：成功落盘完整科研数据。导出包含以下全部标准学术图表的论文级实验成果：
+- **基础技能（60分）**：完成 Unity 仿真全链路系统联调。4 架以上虚拟无人机能够稳定运行在 Rule Pilot + Safety Gate 架构下，系统无崩溃或消息死锁，并能落盘标准 JSONL/CSV 日志。
+- **进阶技能（80分）**：完成五组消融条件的 Benchmark 数据采集（C0-C4），并完成 Rule Pilot vs MARL Pilot 的至少一组对比。在 Unity 对抗中展现出 Safety Gate 带来的明显安全提升——碰撞率显著下降，同时任务完成率不降或微降。导出碰撞率对比柱状图、安全接管统计表、端到端延迟拆解图。
+- **卓越技能（100分）**：成功落盘完整科研数据，并完成公共 Benchmark 对齐实验。导出包含以下全部标准学术图表的论文级实验成果：
     - **消融实验柱状图**：C0-C4 五组条件的碰撞率与任务成功率对比
-    - **端到端时延拆解图（Latency Breakdown）**：VLM推理 / MQTT传输 / MARL推理 / Safety Gate判断 / 动作执行的各段延迟占比
+    - **端到端时延拆解图（Latency Breakdown）**：VLM推理 / MQTT传输 / Pilot/MARL推理 / Safety Gate判断 / 动作执行的各段延迟占比
     - **3D 仿真飞行轨迹对比图**：C2（单向分层，有碰撞）vs C4（双向完整，安全避让）在同一场景下的轨迹可视化
     - **安全接管事件时间线（Timeline）**：标注接管触发时刻、恢复时刻、LLM 指令修正时刻
     - **对战胜率与碰撞率对比表**：红军 vs 蓝军在不同消融条件下的对抗结果
