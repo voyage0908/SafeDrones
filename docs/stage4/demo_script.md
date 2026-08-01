@@ -1,6 +1,6 @@
-# Stage 4 Unity Safety Gate Demo 脚本
+# 阶段四 Unity Safety Gate Demo 脚本
 
-本脚本用于展示两架虚拟无人机在 Unity 中相向飞行时，规则版 Safety Gate 如何提前预警、接管并阻止继续接近。
+本脚本用于展示 C3 条件下的 Safety Gate 可视化效果：两架虚拟无人机收到危险交叉航点后，Safety Gate 负责短时安全分离，风险解除后由 `marl_pilot.py` 继续推动无人机完成原始高层目标。
 
 一键运行：
 
@@ -8,32 +8,64 @@
 bash scripts/stage4_demo.sh
 ```
 
+默认脚本会使用 `seed=0` 依次复现当初 10 轮测试中的三种 C3 benchmark 场景：
+
+1. `head_on_crossing`：正面对冲交叉；
+2. `perpendicular_crossing`：垂直航线交叉；
+3. `diagonal_crossing`：对角航线交叉。
+
+如果只想演示单个场景，使用 `--scenario`：
+
+```bash
+bash scripts/stage4_demo.sh --scenario head_on_crossing --seed 0
+bash scripts/stage4_demo.sh --scenario perpendicular_crossing --seed 0
+bash scripts/stage4_demo.sh --scenario diagonal_crossing --seed 0
+```
+
+如果要复现当初 10 轮测试中的其它轮次，调整 `--seed`，范围为 `0` 到 `9`：
+
+```bash
+bash scripts/stage4_demo.sh --scenario all --seed 3
+```
+
 ## 展示目标
 
 1. Unity 能同时显示 `Drone 1` 和 `Drone 2`。
-2. 两架无人机先在安全距离外分开移动。
-3. 下发交叉航线后，Safety Gate 检测碰撞风险。
+2. 两架无人机先移动到当前场景的起点。
+3. 注入危险交叉目标后，Safety Gate 检测碰撞风险并发布安全分离 setpoint。
 4. Unity 中无人机短暂变黄表示 `warning`，触发接管时变红表示 `safety_override`。
-5. `/api/events` 能看到结构化 `safety_override` 事件。
+5. 接管结束后，`marl_pilot.py` 继续追踪缓存的原始目标，无人机完成该场景。
+6. 终端会打印 benchmark 坐标、最小距离、接管次数、预警次数和最近的 `safety_override` 事件。
 
-当前 demo 默认参数：
+## 一键脚本流程
+
+脚本会自动启动：
 
 ```text
-safe_distance_m = 1.6
-low_threshold = 0.32
-high_threshold = 0.70
-hold_sec = 1.0
+scripts/dev_broker.py
+mock_drone.py --drone-id 1 [scenario-specific args]
+mock_drone.py --drone-id 2 [scenario-specific args]
+marl_pilot.py [scenario-specific args]
+safety_gate.py
 ```
 
-这组参数只比上一版略保守，目标是让无人机停止时距离稍微拉开，同时不把 Safety Gate 调成过度敏感。
+其中 `perpendicular_crossing` 和 `diagonal_crossing` 会使用和 benchmark runner 相同的高风险参数：MockDrone 使用 `--speed 1.6 --max-accel 2.0`，`marl_pilot.py` 使用 `--rule-safe-distance 0.01 --repulsion-gain 0.0 --max-speed 2.0 --horizon-sec 0.5`。`head_on_crossing` 使用 benchmark 中的默认参数。
 
-## 1. 启动后端
+脚本会通过 `Scenario.targets_for_seed(seed)` 生成起点和交叉目标，然后先发送起点，等待两架无人机达到该场景的初始分离条件，再等待你按 Enter 注入交叉目标。
 
-在 WSL 中进入仓库根目录：
+运行过程中，脚本会提示：
 
-```bash
-cd $root
+```text
+open unity/SwarmUnityDemo in Unity Hub, press Play, then press Enter here
 ```
+
+此时回到 Unity Editor 点击 Play。确认场景里出现 `Drone 1` 和 `Drone 2` 后，再回到终端。脚本会在每个场景达到初始分离后提示你按 Enter 注入交叉目标；默认总入口会依次运行三种场景。
+
+每个场景开始前，脚本会先发送起点并等待到位；注入危险交叉目标前，会再次等待你按 Enter。这样你可以在 Unity 中清楚观察“起点到位 -> 危险目标注入 -> Safety Gate 接管 -> Pilot 恢复原目标”的完整过程。
+
+## 命令行分步运行
+
+如果需要逐个终端观察日志，可以手动运行。
 
 终端 1：启动 MQTT broker。
 
@@ -44,13 +76,13 @@ conda run -n eai-swarm python scripts/dev_broker.py
 终端 2：启动 1 号无人机。
 
 ```bash
-conda run -n eai-swarm python mock_drone.py --drone-id 1
+conda run -n eai-swarm python mock_drone.py --drone-id 1 --speed 1.6 --max-accel 2.0
 ```
 
 终端 3：启动 2 号无人机。
 
 ```bash
-conda run -n eai-swarm python mock_drone.py --drone-id 2
+conda run -n eai-swarm python mock_drone.py --drone-id 2 --speed 1.6 --max-accel 2.0
 ```
 
 终端 4：启动 FastAPI gateway。
@@ -59,28 +91,17 @@ conda run -n eai-swarm python mock_drone.py --drone-id 2
 conda run -n eai-swarm uvicorn gateway:app --host 127.0.0.1 --port 8000
 ```
 
-检查 gateway：
+终端 5：启动规则 Pilot。
 
 ```bash
-curl http://127.0.0.1:8000/api/health
+conda run -n eai-swarm python marl_pilot.py \
+  --rule-safe-distance 0.01 \
+  --repulsion-gain 0.0 \
+  --max-speed 2.0 \
+  --horizon-sec 0.5
 ```
 
-## 2. 启动 Unity
-
-1. 在 Unity Hub 打开 `unity/SwarmUnityDemo`。
-2. 打开保存了 `SwarmTelemetryManager` 的场景。
-3. 点击 Play。
-4. Console 应看到 MQTT 订阅日志。
-
-如果场景里暂时没有无人机，保持 Play 状态，等 MockDrone telemetry 发布后会自动生成。
-
-## 3. 演示步骤
-
-### A. 先把两架无人机分开
-
-这一步先不要启动 Safety Gate。原因是两架 MockDrone 默认都从原点启动，Safety Gate 如果太早接入，会把“同点起飞”误当成高风险接近，导致一开始就接管。
-
-在任意 WSL 终端执行：
+先发送第一组起点，等待两机拉开后再启动 Safety Gate：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/direct-command \
@@ -92,24 +113,19 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
   -d '{"drone":2,"waypoint":[3,0,1]}'
 ```
 
-观察点：
-
-- Unity 中两架无人机向左右两侧分开。
-- 此时颜色应保持各自基础颜色，最多只短暂出现低风险状态。
-
-等待约 6 到 8 秒，让它们基本到位。
-
-### B. 启动 Safety Gate
-
-等两架无人机已经拉开后，再启动 Safety Gate：
+终端 6：启动 Safety Gate。
 
 ```bash
 conda run -n eai-swarm python safety_gate.py
 ```
 
-### C. 下发交叉航线
+之后按三种场景依次注入起点和目标。demo 脚本和下面的手工命令使用相同的固定可视化坐标；正式 benchmark runner 才使用 `Scenario.targets_for_seed(seed)` 生成带随机种子的扰动坐标。
 
-执行：
+### 场景一：正面对冲交叉
+
+起点：`Drone 1 -> [-3,0,1]`，`Drone 2 -> [3,0,1]`。
+
+目标：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/direct-command \
@@ -121,66 +137,76 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
   -d '{"drone":2,"waypoint":[-3,0,1]}'
 ```
 
-观察点：
+### 场景二：垂直航线交叉
 
-- 两架无人机开始相向移动。
-- 风险升高时，Unity 中无人机短暂变黄。
-- 接管触发时，Safety Gate 终端出现 `override` 日志。
-- Unity 中对应无人机短暂变红，并停止继续接近。
-
-### D. 查看事件
-
-执行：
-
-```bash
-curl http://127.0.0.1:8000/api/events
-```
-
-预期能看到类似字段：
-
-```json
-{
-  "event": "safety_override",
-  "event_name": "safety_override",
-  "reason": "collision_risk_exceeded",
-  "risk_level": 0.7,
-  "target_drone": 2
-}
-```
-
-`risk_level` 和 `target_drone` 会根据实际触发时刻变化。
-
-### E. 恢复到安全位置
-
-展示完接管后，可以把两架无人机重新拉开：
+起点：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/direct-command \
   -H 'Content-Type: application/json' \
-  -d '{"drone":1,"waypoint":[-3,1,1]}'
+  -d '{"drone":1,"waypoint":[-3,0,1]}'
 
 curl -X POST http://127.0.0.1:8000/api/direct-command \
   -H 'Content-Type: application/json' \
-  -d '{"drone":2,"waypoint":[3,-1,1]}'
+  -d '{"drone":2,"waypoint":[0,-3,1]}'
 ```
 
-观察点：
+目标：
 
-- 风险下降后，后续 `safety_status` 应回到 `normal` 或 `warning` 以下。
-- Unity 颜色会在短暂保持后恢复到基础颜色。
+```bash
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":1,"waypoint":[3,0,1]}'
 
-## 4. 结束演示
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":2,"waypoint":[0,3,1]}'
+```
+
+### 场景三：对角航线交叉
+
+起点：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":1,"waypoint":[-3,-3,1]}'
+
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":2,"waypoint":[-3,3,1]}'
+```
+
+目标：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":1,"waypoint":[3,3,1]}'
+
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":2,"waypoint":[3,-3,1]}'
+```
+
+查看事件：
+
+```bash
+curl "http://127.0.0.1:8000/api/events?limit=20"
+```
+
+## 结束演示
 
 按以下顺序关闭：
 
 1. Unity 停止 Play。
-2. 在 Safety Gate 终端按 `Ctrl+C`。
-3. 在 gateway、MockDrone 和 broker 终端分别按 `Ctrl+C`。
+2. 在 Safety Gate、Pilot、gateway、MockDrone 和 broker 终端分别按 `Ctrl+C`。
 
 需要停止的后端进程包括：
 
 ```text
 safety_gate.py
+marl_pilot.py
 uvicorn gateway:app
 mock_drone.py --drone-id 1
 mock_drone.py --drone-id 2

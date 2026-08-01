@@ -23,6 +23,18 @@ class Stage4BenchmarkScenarioTest(unittest.TestCase):
         self.assertGreater(targets["drone2_start"][0], 0)
         self.assertGreater(targets["drone1_goal"][0], 0)
         self.assertLess(targets["drone2_goal"][0], 0)
+        self.assertEqual(targets["drone1_goal"], targets["drone2_start"])
+        self.assertEqual(targets["drone2_goal"], targets["drone1_start"])
+        self.assertAlmostEqual(targets["drone1_start"][1], -targets["drone2_start"][1])
+        self.assertAlmostEqual(targets["drone1_start"][2], targets["drone2_start"][2])
+        self.assertTrue(
+            scenario.is_separated(
+                {
+                    1: {"position": targets["drone1_start"]},
+                    2: {"position": targets["drone2_start"]},
+                }
+            )
+        )
         self.assertTrue(
             scenario.is_complete(
                 {

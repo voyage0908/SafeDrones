@@ -18,7 +18,7 @@
 当前 Safety Gate 不做完整路径规划。它只在 `override` 状态下生成短时安全分离 setpoint，把无人机带出高风险区域；风险低于释放阈值后停止覆盖，低层 Pilot 继续追踪缓存的高层目标。若多次接管仍无法释放，后续 C4 Replanner 再负责生成任务级绕行点或换机策略。
 
 完整演示流程可直接按 [Demo 脚本](./demo_script.md) 执行。
-也可以直接运行 `bash scripts/stage4_demo.sh`。
+也可以直接运行 `bash scripts/stage4_demo.sh`。当前脚本会使用 `Scenario.targets_for_seed(seed)` 复现当初 10 轮测试中的 `head_on_crossing`、`perpendicular_crossing`、`diagonal_crossing` 三种 C3 benchmark 场景，并等待无人机在避险后继续完成原目标。若只演示单个场景，可运行 `bash scripts/stage4_demo.sh --scenario head_on_crossing --seed 0`；`--seed` 支持 `0` 到 `9`。
 阶段四的 MARL 训练 scaffold 见 [MARL 训练说明](./marl_training.md)。
 
 ## 启动顺序
@@ -32,19 +32,29 @@ conda run -n eai-swarm python scripts/dev_broker.py
 终端 2：启动 1 号无人机。
 
 ```bash
-conda run -n eai-swarm python mock_drone.py --drone-id 1
+conda run -n eai-swarm python mock_drone.py --drone-id 1 --speed 1.6 --max-accel 2.0
 ```
 
 终端 3：启动 2 号无人机。
 
 ```bash
-conda run -n eai-swarm python mock_drone.py --drone-id 2
+conda run -n eai-swarm python mock_drone.py --drone-id 2 --speed 1.6 --max-accel 2.0
 ```
 
 终端 4：启动 gateway。
 
 ```bash
 conda run -n eai-swarm uvicorn gateway:app --host 127.0.0.1 --port 8000
+```
+
+终端 5：启动规则 Pilot。这里故意降低规则 Pilot 自身排斥强度，让危险主要由 Safety Gate 接管。
+
+```bash
+conda run -n eai-swarm python marl_pilot.py \
+  --rule-safe-distance 0.01 \
+  --repulsion-gain 0.0 \
+  --max-speed 2.0 \
+  --horizon-sec 0.5
 ```
 
 Unity：打开 `unity/SwarmUnityDemo`，点击 Play。
@@ -64,6 +74,14 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
 ```
 
 等待它们到位后，让它们相向飞行：
+
+先启动 Safety Gate：
+
+```bash
+conda run -n eai-swarm python safety_gate.py
+```
+
+再发送交叉目标：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/direct-command \
