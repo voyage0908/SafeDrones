@@ -271,7 +271,164 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
 
 预期结果：Unity 会自动生成 `Drone 2`，并独立移动。
 
-## 10. 常见问题
+## 10. 阶段四 Safety Gate Demo
+
+阶段四 demo 用于在 Unity 中观察 Safety Gate 的预警、接管和恢复效果。它和阶段四 benchmark 的关系如下：
+
+- Unity demo：面向可视化演示，使用两架 MockDrone、FastAPI gateway 和 `safety_gate.py`，通过手动注入交叉航线触发接管。
+- Benchmark runner：面向数据采集，使用 `scripts/stage4_benchmark.py` 自动跑 C2/C3/C4、随机种子和 CSV 指标。
+
+如果你的目标是课堂或展示，优先跑本节 demo。如果目标是复现实验数据，使用 `docs/stage4/README.md` 和 `docs/stage4/RESULTS.md` 中的 benchmark 命令。
+
+### 10.1 脚本一键运行
+
+确保 Unity 项目已经打开，但先不要急着点 Play。然后在 WSL 项目根目录运行：
+
+```bash
+cd $root
+bash scripts/stage4_demo.sh
+```
+
+脚本会自动完成：
+
+1. 启动 MQTT broker；
+2. 启动 1 号和 2 号 MockDrone；
+3. 等待两架无人机 telemetry 就绪；
+4. 启动 FastAPI gateway；
+5. 发送初始分离航点，让两架无人机先移动到 `[-3,0,1]` 和 `[3,0,1]`；
+6. 提示你回到 Unity 点击 Play；
+7. 启动 `safety_gate.py`；
+8. 发送相向交叉航线；
+9. 打印最近的 `safety_status` / `safety_override` 事件；
+10. 等你按 Enter 后关闭所有脚本启动的后端进程。
+
+脚本日志会写入：
+
+```text
+logs/stage4_demo/
+```
+
+脚本运行到下面提示时：
+
+```text
+open unity/SwarmUnityDemo in Unity Hub, press Play, then press Enter here
+```
+
+回到 Unity Editor，点击 Play。确认场景里出现 `Drone 1` 和 `Drone 2` 后，再回到终端按 Enter。随后脚本会启动 Safety Gate 并注入交叉航线。
+
+预期现象：
+
+1. 两架无人机先分开到左右两侧；
+2. 注入交叉航线后，Unity 中无人机接近时会出现黄色预警或红色接管状态；
+3. Safety Gate 发布短时安全分离 setpoint；
+4. 风险解除后，无人机继续前往原目标；
+5. 终端最后能看到 `/api/events` 返回的 `safety_override` 或 `safety_status` 事件。
+
+### 10.2 命令行分步运行
+
+如果需要逐个终端观察日志，可以不用一键脚本，按下面顺序手动运行。
+
+终端 1：启动 MQTT broker。
+
+```bash
+cd $root
+conda run -n eai-swarm python scripts/dev_broker.py
+```
+
+终端 2：启动 1 号无人机。
+
+```bash
+cd $root
+conda run -n eai-swarm python mock_drone.py --drone-id 1
+```
+
+终端 3：启动 2 号无人机。
+
+```bash
+cd $root
+conda run -n eai-swarm python mock_drone.py --drone-id 2
+```
+
+终端 4：启动 gateway。
+
+```bash
+cd $root
+conda run -n eai-swarm uvicorn gateway:app --host 127.0.0.1 --port 8000
+```
+
+确认 gateway 可用：
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+发送初始分离航点：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":1,"waypoint":[-3,0,1]}'
+
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":2,"waypoint":[3,0,1]}'
+```
+
+等待几秒，让两架无人机在 Unity 中分开。然后回到 Unity Editor，点击 Play。如果已经在 Play，可以直接继续。
+
+终端 5：启动 Safety Gate。
+
+```bash
+cd $root
+conda run -n eai-swarm python safety_gate.py
+```
+
+发送相向交叉航线：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":1,"waypoint":[3,0,1]}'
+
+curl -X POST http://127.0.0.1:8000/api/direct-command \
+  -H 'Content-Type: application/json' \
+  -d '{"drone":2,"waypoint":[-3,0,1]}'
+```
+
+查看 Safety Gate 事件：
+
+```bash
+curl "http://127.0.0.1:8000/api/events?limit=20"
+```
+
+预期事件里会出现：
+
+```text
+safety_status
+safety_override
+```
+
+### 10.3 关闭阶段四 Demo
+
+如果使用 `scripts/stage4_demo.sh`，按脚本提示在终端里按 Enter，脚本会自动清理它启动的进程。
+
+如果手动分步运行，在每个 WSL 终端里按：
+
+```text
+Ctrl+C
+```
+
+需要停止的进程包括：
+
+```text
+scripts/dev_broker.py
+mock_drone.py --drone-id 1
+mock_drone.py --drone-id 2
+uvicorn gateway:app
+safety_gate.py
+```
+
+## 11. 常见问题
 
 ### Add Component 里搜不到 DroneTelemetrySubscriber
 
@@ -329,7 +486,7 @@ bind: 0.0.0.0:1883
 
 ### 关闭所有 server
 
-在三个 WSL 终端里分别按：
+在对应的 WSL 终端里分别按：
 
 ```text
 Ctrl+C
@@ -343,7 +500,13 @@ mock_drone.py
 uvicorn gateway:app
 ```
 
-## 11. 阶段三验收标准
+如果你正在运行阶段四 demo，还需要停止：
+
+```text
+safety_gate.py
+```
+
+## 12. 阶段三验收标准
 
 满足以下条件即可认为 Unity 可视化 demo 完成：
 

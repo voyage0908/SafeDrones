@@ -71,3 +71,6 @@ unity/SwarmUnityDemo
 ```
 
 Keep the Python package directory `swarm/` separate from the Unity project. Do not place Unity `Assets/`, `Packages/`, `ProjectSettings/`, or `Library/` under the Python `swarm/` package.
+
+## Documents writing
+Write all the documents in Chinese.

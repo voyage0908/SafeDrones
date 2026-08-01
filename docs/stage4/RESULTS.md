@@ -1,10 +1,10 @@
-# Stage 4 Results
+# 阶段四结果
 
-## Run Metadata
+## 运行信息
 
-- Date: 2026-08-01
-- Environment: `conda run -n eai-swarm`
-- Command:
+- 日期：2026-08-01
+- 环境：`conda run -n eai-swarm`
+- 命令：
 
 ```bash
 conda run -n eai-swarm python scripts/stage4_benchmark.py \
@@ -14,35 +14,35 @@ conda run -n eai-swarm python scripts/stage4_benchmark.py \
   --out results/stage4
 ```
 
-- Result directory: `results/stage4/all_scenarios/20260801-140557`
-- Raw files:
+- 结果目录：`results/stage4/all_scenarios/20260801-140557`
+- 原始结果文件：
   - `runs.jsonl`
   - `summary.csv`
   - `aggregate.csv`
 
-`results/` is intentionally git-ignored. This document records the reproducible command and the aggregate results needed for stage-four review.
+`results/` 已加入 `.gitignore`，不会提交到仓库。本文件只记录阶段四验收需要的可复现实验命令和聚合结果。
 
-## Conditions
+## 消融条件
 
-| Condition | Meaning |
+| 条件 | 含义 |
 | --- | --- |
-| C2 | Rule Pilot follows high-level crossing waypoints, no Safety Gate |
-| C3 | C2 + Safety Gate, no LLM feedback replanning |
-| C4 | C3 + real DeepSeek LLM replanner after `safety_override` |
+| C2 | 规则 Pilot 追随高层交叉航点，无 Safety Gate |
+| C3 | C2 + Safety Gate，无 LLM 反馈重规划 |
+| C4 | C3 + 真实 DeepSeek LLM Replanner，在 `safety_override` 后执行反馈重规划 |
 
-C4 keeps the control boundary explicit: Safety Gate performs high-frequency emergency separation; DeepSeek only consumes structured override events and returns low-frequency mission-level recovery waypoints.
+C4 的控制边界保持明确：Safety Gate 负责高频紧急安全分离；DeepSeek 只消费结构化 override 事件，并返回低频任务级恢复航点。
 
-## Overall Results
+## 总体结果
 
-| Condition | Runs | Success Rate | Collision Rate | Near-Miss Rate | Avg Min Distance (m) | Avg Overrides | Avg LLM Replans | Avg LLM Errors | Avg LLM Latency (ms) |
+| 条件 | 轮次 | 成功率 | 碰撞率 | 近失率 | 平均最小距离 (m) | 平均接管次数 | 平均 LLM 重规划次数 | 平均 LLM 错误次数 | 平均 LLM 延迟 (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C2 | 30 | 0.0000 | 1.0000 | 1.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 | C3 | 30 | 1.0000 | 0.0000 | 0.2333 | 0.8875 | 2.1333 | 0.0000 | 0.0000 | 0.0000 |
 | C4 | 30 | 0.9667 | 0.0000 | 0.1333 | 0.9186 | 2.1333 | 1.9667 | 0.0333 | 2634.4760 |
 
-## Scenario Results
+## 分场景结果
 
-| Scenario | Condition | Runs | Success Rate | Collision Rate | Near-Miss Rate | Avg Min Distance (m) | Avg Overrides | Avg LLM Replans | Avg LLM Errors | Avg Revision Rate | Avg LLM Latency (ms) | Max LLM Latency (ms) |
+| 场景 | 条件 | 轮次 | 成功率 | 碰撞率 | 近失率 | 平均最小距离 (m) | 平均接管次数 | 平均 LLM 重规划次数 | 平均 LLM 错误次数 | 平均指令修正率 | 平均 LLM 延迟 (ms) | 最大 LLM 延迟 (ms) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `head_on_crossing` | C2 | 10 | 0.0000 | 1.0000 | 1.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 | `head_on_crossing` | C3 | 10 | 1.0000 | 0.0000 | 0.4000 | 0.8200 | 2.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
@@ -54,21 +54,21 @@ C4 keeps the control boundary explicit: Safety Gate performs high-frequency emer
 | `diagonal_crossing` | C3 | 10 | 1.0000 | 0.0000 | 0.1000 | 0.9536 | 2.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 | `diagonal_crossing` | C4 | 10 | 1.0000 | 0.0000 | 0.1000 | 0.9963 | 2.0000 | 2.0000 | 0.0000 | 1.0000 | 2169.6794 | 4698.6108 |
 
-## Findings
+## 结论
 
-1. C2 is the intended unsafe baseline: all 30 runs collide, with `avg_min_distance_m = 0.0`.
-2. C3 validates the Safety Gate contribution: all 30 runs finish without collision, across all three crossing scenarios.
-3. C4 validates the real DeepSeek feedback path, but not as a hard-real-time safety dependency. It completed 29/30 strict trials without collision, with 59 successful LLM replans out of 60 expected replan opportunities.
-4. The single C4 strict failure was `perpendicular_crossing`, seed 3. The physical task still completed and no collision occurred (`min_distance_m = 1.0039`), but one DeepSeek replan failed after 3 attempts with `LLM response did not contain a JSON object`, so the run is counted as a C4 protocol failure.
-5. LLM latency is non-trivial: C4 averaged about 2.63 seconds per successful replan, with a worst observed successful call of 12.98 seconds. This supports the architecture decision that Safety Gate must remain local and high-frequency.
+1. C2 是预期中的危险基线：30 轮全部碰撞，`avg_min_distance_m = 0.0`。
+2. C3 验证了 Safety Gate 的独立贡献：三个交叉场景共 30 轮全部完成任务，碰撞率为 0。
+3. C4 验证了真实 DeepSeek 反馈链路，但它不是硬实时安全依赖。C4 在严格协议条件下完成 29/30 轮，60 次预期 LLM 重规划机会中成功 59 次。
+4. 唯一一次 C4 严格失败发生在 `perpendicular_crossing` 的 seed 3。该轮物理任务实际完成且没有碰撞（`min_distance_m = 1.0039`），但其中一次 DeepSeek 重规划连续 3 次没有返回可解析 JSON，因此按 C4 协议失败计入。
+5. LLM 延迟不可忽略：C4 成功重规划的平均延迟约 2.63 秒，最大成功调用延迟为 12.98 秒。这支持当前架构判断：Safety Gate 必须保持本地、高频、独立于 LLM。
 
-## Stage-Four Status
+## 阶段四状态
 
-Stage four is closed for the local protocol benchmark:
+阶段四的本地协议 Benchmark 已收口：
 
-- C2/C3/C4 runner exists and is reproducible.
-- C2 vs C3 isolates the Safety Gate contribution.
-- C4 uses a real DeepSeek API feedback loop rather than a fake replanner.
-- Logs and CSV metrics capture collision, near miss, override, command revision, LLM error, and LLM latency behavior.
+- C2/C3/C4 runner 已实现并可复现；
+- C2 vs C3 已隔离出 Safety Gate 的安全贡献；
+- C4 使用真实 DeepSeek API 反馈闭环，不是规则伪 Replanner；
+- 日志和 CSV 指标已经覆盖碰撞、近失、接管、指令修正、LLM 错误和 LLM 延迟。
 
-Remaining work moves to the next stage: MARL/ONNX policy training, public benchmark alignment, and larger Unity multi-agent scenarios.
+后续工作进入下一阶段：MARL/ONNX 策略训练、公共 Benchmark 对齐，以及更大规模 Unity 多机场景。
