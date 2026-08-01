@@ -136,12 +136,60 @@ conda run -n eai-swarm python -m unittest discover -s tests
 
 ## Benchmark
 
+当前 benchmark runner 支持：
+
+- `head_on_crossing`
+- `perpendicular_crossing`
+- `diagonal_crossing`
+
+其中 `perpendicular_crossing` 和 `diagonal_crossing` 会降低规则 Pilot 的排斥强度，以制造更接近故障注入的高风险交叉场景；C3 条件下仍由 Safety Gate 负责最终接管。
+
 ```bash
 conda run -n eai-swarm python scripts/stage4_benchmark.py \
-  --scenario head_on_crossing \
+  --scenario all \
   --conditions C2,C3 \
   --seeds 10 \
   --out results/stage4
 ```
 
-该命令会自动启动 broker、两架 MockDrone、`marl_pilot.py` 和 `safety_gate.py`，并在 `results/stage4/...` 下落盘 `runs.jsonl` 与 `summary.csv`。当前基准场景中，C2 会稳定失败，C3 会稳定完成交叉并保持安全距离。
+该命令会自动启动 broker、两架 MockDrone、`marl_pilot.py` 和 `safety_gate.py`，并在 `results/stage4/...` 下落盘：
+
+- `runs.jsonl`: 每轮完整结果
+- `summary.csv`: 每轮表格结果
+- `aggregate.csv`: 按场景和条件聚合的成功率、碰撞率、最小距离、接管次数等指标
+
+当前基准场景中，C2 会稳定失败，C3 会稳定完成交叉并保持安全距离。
+
+### C4 DeepSeek Replanner
+
+C4 会真实调用 DeepSeek API：Safety Gate 触发 `safety_override` 后，benchmark runner 把 override 事件、当前无人机状态和原任务终点交给 `CommanderLLM`，由 DeepSeek 返回恢复航点，再发布为高优先级任务命令。Safety Gate 仍负责紧急避障，DeepSeek 只负责低频任务级恢复规划。
+
+先配置 API key：
+
+```bash
+export LLM_PROVIDER=deepseek
+export DEEPSEEK_API_KEY=...
+# 可选：export DEEPSEEK_MODEL=...
+```
+
+运行单场景 smoke：
+
+```bash
+conda run -n eai-swarm python scripts/stage4_benchmark.py \
+  --scenario head_on_crossing \
+  --conditions C4 \
+  --seeds 1 \
+  --out results/stage4
+```
+
+需要把 C4 纳入完整对照时，再显式运行：
+
+```bash
+conda run -n eai-swarm python scripts/stage4_benchmark.py \
+  --scenario all \
+  --conditions C2,C3,C4 \
+  --seeds 10 \
+  --out results/stage4
+```
+
+`aggregate.csv` 会额外输出 `avg_llm_replan_count`、`avg_llm_replan_error_count`、`avg_command_revision_rate`、`avg_llm_latency_ms` 和 `max_llm_latency_ms`。C4 的 `task_success` 不只要求安全完成交叉，也要求至少一次 LLM replan 成功且没有 LLM 错误。

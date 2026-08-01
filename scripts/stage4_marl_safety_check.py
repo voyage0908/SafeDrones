@@ -101,6 +101,10 @@ class Stage4Monitor:
         with self.lock:
             return dict(self.telemetry)
 
+    def commander_events(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return list(self.events)
+
     def summary(self, swap_completed: bool) -> dict[str, Any]:
         with self.lock:
             positions = {
@@ -151,11 +155,12 @@ class Stage4Monitor:
 
         event_name = payload.get("event_name") or payload.get("event")
         mode = payload.get("mode") or payload.get("status")
-        if event_name == "safety_override":
-            self.override_count += 1
-            self.events.append(payload)
-        if mode == "warning":
-            self.warning_count += 1
+        with self.lock:
+            if event_name == "safety_override":
+                self.override_count += 1
+                self.events.append(payload)
+            if mode == "warning":
+                self.warning_count += 1
 
     def _record_telemetry(self, payload: dict[str, Any]) -> None:
         try:

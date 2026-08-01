@@ -78,6 +78,8 @@ def main() -> None:
     parser.add_argument("--max-neighbors", type=int, default=3)
     parser.add_argument("--max-speed", type=float, default=1.0)
     parser.add_argument("--horizon-sec", type=float, default=0.4)
+    parser.add_argument("--rule-safe-distance", type=float, default=1.6)
+    parser.add_argument("--repulsion-gain", type=float, default=1.2)
     parser.add_argument("--override-hold-sec", type=float, default=1.5)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
@@ -93,6 +95,10 @@ def main() -> None:
         raise SystemExit("--max-speed must be positive")
     if args.horizon_sec <= 0:
         raise SystemExit("--horizon-sec must be positive")
+    if args.rule_safe_distance <= 0:
+        raise SystemExit("--rule-safe-distance must be positive")
+    if args.repulsion_gain < 0:
+        raise SystemExit("--repulsion-gain must be non-negative")
 
     observation_config = MarlObservationConfig(max_neighbors=args.max_neighbors)
     observation_builder = MarlObservationBuilder(observation_config)
@@ -101,7 +107,11 @@ def main() -> None:
         pilot: Any = OnnxMarlPilot(args.onnx_model, observation_config=observation_config)
         LOGGER.info("loaded ONNX MARL policy: %s", args.onnx_model)
     else:
-        pilot = RuleMarlPilot(action_config=action_config)
+        pilot = RuleMarlPilot(
+            action_config=action_config,
+            safe_distance_m=args.rule_safe_distance,
+            repulsion_gain=args.repulsion_gain,
+        )
         LOGGER.info("using rule fallback pilot; pass --onnx-model to load a trained policy")
 
     snapshots: dict[int, DroneSnapshot] = {}

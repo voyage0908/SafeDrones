@@ -295,11 +295,11 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 
 ### 阶段四：Benchmark 化 Safety Gate 与低层 Pilot 消融预演 (约 2-3 天)
 
-- **目标**：先建立可复现的安全协议 Benchmark 和 C2/C3/C4 消融流程，再把 MARL/ONNX 作为可替换低层 Pilot 接入。阶段四的第一优先级不是训练出复杂 MARL，而是证明 Safety Gate 和上行反馈的贡献可以被稳定测量。
+- **目标**：先建立可复现的安全协议 Benchmark 和 C2/C3/C4 消融流程，其中 C4 必须接入真实 DeepSeek LLM API 做反馈重规划；再把 MARL/ONNX 作为可替换低层 Pilot 接入。阶段四的第一优先级不是训练出复杂 MARL，而是证明 Safety Gate、上行反馈和 LLM 恢复规划的贡献可以被稳定测量。
 - **具体任务**：
     1. **固定 Benchmark 场景与数据格式**：定义 `head_on_crossing`、`perpendicular_crossing`、`narrow_passage`、`moving_obstacle`、`geofence_violation`、`llm_timeout`、`packet_loss` 等场景。每个场景固定初始位置、目标点、障碍物、随机种子、运行时长和成功条件。
     2. **实现统一指标与日志**：每轮实验落盘 JSONL 事件日志和 CSV 指标，至少包含 `collision_count`、`near_miss_count`、`min_distance_m`、`ttc_violation_count`、`task_success`、`override_count`、`recovery_time_sec`、`path_efficiency`、`latency_breakdown`、`command_revision_rate`。
-    3. **实现 C2/C3/C4 runner**：C2 为单向分层（Pilot 追随 LLM 航点，无 Gate）；C3 为单向 + Safety Gate（有否决但无 LLM 反馈重规划）；C4 为完整双向协议（Gate 触发后向 LLM/Pseudo-LLM Replanner 上报，随后重发绕行或换机指令）。
+    3. **实现 C2/C3/C4 runner**：C2 为单向分层（Pilot 追随 LLM 航点，无 Gate）；C3 为单向 + Safety Gate（有否决但无 LLM 反馈重规划）；C4 为完整双向协议（Gate 触发后向真实 DeepSeek LLM Replanner 上报，随后由 LLM 返回恢复航点、绕行航点或换机指令）。不把规则伪 Replanner 当作 C4 结果。
     4. **完善 Safety Gate 模块**：编写并测试 `safety_gate.py`，维护独立于 MARL 策略网络的碰撞风险评估器。第一版使用规则/CBF/人工势场实现 $u_{\text{safety}}$，必须避免"只悬停不恢复"的死锁；高风险时接管，风险下降后恢复追踪。
     5. **实现碰撞风险评估器**：基于多机相对距离、接近速率、预测碰撞时间（TTC）和软围栏约束，实时计算 `collision_risk ∈ [0, 1]`，并记录触发对象、风险来源和恢复耗时。
     6. **实现低层 Pilot 基线**：先提供 Rule Pilot 作为可解释基线，输出高频速度向量或短周期安全 setpoint；再预留 MARL Pilot 接口，保证 observation/action schema 固定。
@@ -308,7 +308,7 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
     9. **阶段验证**：
         - 固定交叉航线场景中，C3 必须触发 Safety Gate、保持最小安全距离，并能在风险解除后继续完成任务；
         - C3 vs C2 至少完成 10 个随机种子统计，输出碰撞率/近失率/接管次数/恢复时间对比；
-        - C4 至少用规则 Replanner 或 LLM 反馈上下文完成一次"收到 override 后重新规划"闭环；
+        - C4 至少用真实 DeepSeek LLM API 完成一次"收到 override 后重新规划"闭环，并记录 LLM 延迟、修正次数和失败原因；
         - Unity 可视化能展示正常、预警、接管和恢复状态。
 
 ---
@@ -366,16 +366,16 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 ### 第四天：Benchmark 化 Safety Gate + 双向安全协议部署与验证（核心实验）
 
 #### 1. 课题描述
-在第三天的单向分层架构基础上，部署本方案的核心创新——**双向安全协议**，并把验证方式从单次 demo 改为固定 Benchmark 消融。加载 Safety Gate 模块、低层 Pilot 和 MQTT 反向反馈通道，验证当 LLM 下发危险指令时，低层 Pilot 能够显式接管控制权、上报原因，并在风险解除后恢复任务。
-工作流程：1. 使用规则 Pilot 作为第一版低层控制基线，后续可替换为 ONNX MARL Pilot；2. 部署 Safety Gate 模块（碰撞风险评估器 + β 平滑切换/安全恢复逻辑）；3. 编写本地高频控制回路（20Hz-50Hz），持续注入无人机当前坐标和 VLM 的宏观目标点，MQTT 只负责低频命令和事件；4. 配置 MQTT 反向通道，使 Pilot 在接管事件时向 LLM 网关发送 `override` 和 `status` 消息；5. 在固定 Benchmark 场景中运行 C2/C3/C4 消融，复现第三天中导致碰撞的危险指令；6. 在单台真机上只复现虚拟障碍、越界航点或过近目标点等受控危险输入，验证 Safety Gate 能否阻止危险动作并记录 Sim-to-Real 数据。
+在第三天的单向分层架构基础上，部署本方案的核心创新——**双向安全协议**，并把验证方式从单次 demo 改为固定 Benchmark 消融。加载 Safety Gate 模块、低层 Pilot、MQTT 反向反馈通道和 DeepSeek LLM Replanner，验证当 LLM 下发危险指令时，低层 Pilot 能够显式接管控制权、上报原因，随后由 LLM 消费 override 事件并发布任务级恢复航点。
+工作流程：1. 使用规则 Pilot 作为第一版低层控制基线，后续可替换为 ONNX MARL Pilot；2. 部署 Safety Gate 模块（碰撞风险评估器 + β 平滑切换/安全恢复逻辑）；3. 编写本地高频控制回路（20Hz-50Hz），持续注入无人机当前坐标和 VLM 的宏观目标点，MQTT 只负责低频命令和事件；4. 配置 MQTT 反向通道，使 Pilot 在接管事件时向 LLM 网关发送 `override` 和 `status` 消息；5. 在固定 Benchmark 场景中运行 C2/C3/C4 消融，C4 必须真实调用 DeepSeek API 完成反馈重规划；6. 在单台真机上只复现虚拟障碍、越界航点或过近目标点等受控危险输入，验证 Safety Gate 能否阻止危险动作并记录 Sim-to-Real 数据。
 
 #### 2. 课题目的
-验证双向安全协议的有效性，并保证结果可复现、可对比。核心问题包括：Safety Gate 能否可靠检测风险并接管；接管是否会导致任务死锁；上行反馈是否能降低恢复时间；同一危险场景下 C3/C4 相比 C2 是否显著降低碰撞率和近失率。
+验证双向安全协议的有效性，并保证结果可复现、可对比。核心问题包括：Safety Gate 能否可靠检测风险并接管；接管是否会导致任务死锁；DeepSeek 收到结构化 override 后是否能生成有效恢复航点；同一危险场景下 C3/C4 相比 C2 是否显著降低碰撞率和近失率。
 
 #### 3. 验收评分
 - **基础技能（60分）**：在 Python 边缘控制网关中成功部署规则 Pilot + Safety Gate，跑通 C3 条件（单向 + Gate）的仿真多机控制流程。Safety Gate 能发布 `safety_override` 和 `safety_status`，并在固定交叉航线中保持最小安全距离。单台真机能完成越界航点拒绝、限速悬停或虚拟障碍避让。
 - **进阶技能（80分）**：完成 C3 vs C2 的固定 Benchmark 消融对比。多机相撞航点在 MockDrone/Unity 中复现；C2 记录碰撞/近失/风险升高，C3 记录主动接管、最小距离、恢复时间和任务完成率。每个核心场景至少运行 10 个随机种子，并导出 JSONL/CSV 结果。
-- **卓越技能（100分）**：完成 **C4（双向完整协议）**的全链路验证。VLM 或规则 Replanner 在收到 Pilot 回传的覆盖通知后，能据此调整后续战术（如重新规划绕行路线或替换执行机；真机只有一台时，替换执行机在仿真中验证）。采集 C0-C4 五组仿真消融数据，并至少接入一个公共 Benchmark 环境用于外部对齐。产出包含碰撞率对比、安全接管统计、偏离-恢复时间、LLM 指令修正率等指标的学术图表。
+- **卓越技能（100分）**：完成 **C4（双向完整协议）**的全链路验证。DeepSeek LLM Replanner 在收到 Pilot 回传的覆盖通知后，能据此调整后续战术（如重新规划恢复航点、绕行路线或替换执行机；真机只有一台时，替换执行机在仿真中验证）。采集 C0-C4 五组仿真消融数据，并至少接入一个公共 Benchmark 环境用于外部对齐。产出包含碰撞率对比、安全接管统计、偏离-恢复时间、LLM 指令修正率和 LLM 延迟等指标的学术图表。
 
 ---
 

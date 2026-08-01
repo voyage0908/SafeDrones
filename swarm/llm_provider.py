@@ -94,6 +94,8 @@ def system_prompt() -> str:
         "预设点：侦察点=[10,5,2]，基地=[0,0,1]，左前方=[5,5,2]，右前方=[5,-5,2]。"
         "只输出 JSON，不输出 Markdown。JSON 字段必须包含："
         "drone:int, waypoint:[x,y,z], priority:normal|high|emergency, confidence:0到1, rationale:string。"
+        "示例 JSON：{\"drone\":1,\"waypoint\":[3.0,0.0,1.0],"
+        "\"priority\":\"normal\",\"confidence\":0.8,\"rationale\":\"恢复原任务航点\"}。"
         "rationale 只给简短可审计理由，不输出完整推理过程。"
     )
 
