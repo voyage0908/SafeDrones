@@ -45,6 +45,7 @@ def main() -> None:
     parser.add_argument("--high-threshold", type=float, default=0.70)
     parser.add_argument("--low-threshold", type=float, default=0.32)
     parser.add_argument("--hold-sec", type=float, default=1.0)
+    parser.add_argument("--override-command-interval", type=float, default=0.5)
     parser.add_argument("--status-interval", type=float, default=1.0)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
@@ -64,6 +65,7 @@ def main() -> None:
     gate = SafetyGate(config)
     snapshots: dict[int, DroneSnapshot] = {}
     active_overrides: set[int] = set()
+    last_override_command_publish: dict[int, float] = {}
     last_status_publish = 0.0
     client = build_mqtt_client(client_id="safety-gate")
 
@@ -100,14 +102,25 @@ def main() -> None:
                 last_status_publish = now
 
             for decision in decisions:
-                if decision.mode == "override" and decision.drone not in active_overrides:
-                    command = build_safety_command(decision)
-                    event = build_override_event(decision)
-                    client.publish(
-                        f"swarm/drone/{decision.drone}/command",
-                        payload=json.dumps(command, separators=(",", ":")),
-                        qos=args.qos,
+                if decision.mode == "override":
+                    first_override = decision.drone not in active_overrides
+                    last_publish = last_override_command_publish.get(decision.drone, 0.0)
+                    should_publish_command = first_override or (
+                        now - last_publish >= args.override_command_interval
                     )
+                    if should_publish_command:
+                        command = build_safety_command(decision)
+                        client.publish(
+                            f"swarm/drone/{decision.drone}/command",
+                            payload=json.dumps(command, separators=(",", ":")),
+                            qos=args.qos,
+                        )
+                        last_override_command_publish[decision.drone] = now
+
+                    if not first_override:
+                        continue
+
+                    event = build_override_event(decision)
                     client.publish(
                         "swarm/commander/override",
                         payload=json.dumps(event, separators=(",", ":")),
@@ -123,6 +136,7 @@ def main() -> None:
 
                 if decision.mode != "override":
                     active_overrides.discard(decision.drone)
+                    last_override_command_publish.pop(decision.drone, None)
 
             time.sleep(args.interval)
     except KeyboardInterrupt:

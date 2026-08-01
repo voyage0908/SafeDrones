@@ -106,13 +106,19 @@ def extract_json_object(text: str) -> dict[str, Any]:
         stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
         stripped = re.sub(r"\s*```$", "", stripped)
 
+    decoder = json.JSONDecoder()
     try:
         value = json.loads(stripped)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
-        if not match:
+        search_start = stripped.find("{")
+        while search_start >= 0:
+            try:
+                value, _ = decoder.raw_decode(stripped[search_start:])
+                break
+            except json.JSONDecodeError:
+                search_start = stripped.find("{", search_start + 1)
+        else:
             raise LLMProviderError("LLM response did not contain a JSON object")
-        value = json.loads(match.group(0))
 
     if not isinstance(value, dict):
         raise LLMProviderError("LLM response JSON must be an object")

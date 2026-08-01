@@ -125,6 +125,7 @@ conda run -n eai-swarm python safety_gate.py \
 - `low-threshold`: 预警阈值
 - `high-threshold`: 接管阈值
 - `hold-sec`: 触发接管后的最小保持时间
+- `override-command-interval`: 接管保持期间刷新安全分离 setpoint 的周期
 
 当前默认值只做了小幅保守调整：`safe-distance` 从 `1.5m` 增加到 `1.6m`，`high-threshold` 从 `0.75` 降到 `0.70`，`low-threshold` 从 `0.35` 降到 `0.32`。目标是让两架无人机在 Unity demo 里略早触发安全分离，同时避免 Safety Gate 在正常间距下过于频繁接管。
 
@@ -164,6 +165,8 @@ conda run -n eai-swarm python scripts/stage4_benchmark.py \
 
 C4 会真实调用 DeepSeek API：Safety Gate 触发 `safety_override` 后，benchmark runner 把 override 事件、当前无人机状态和原任务终点交给 `CommanderLLM`，由 DeepSeek 返回恢复航点，再发布为高优先级任务命令。Safety Gate 仍负责紧急避障，DeepSeek 只负责低频任务级恢复规划。
 
+C4 runner 会对单次 LLM replan 做最多 3 次尝试，以吸收临时 DNS/API 抖动；如果 DeepSeek 连续无法返回可解析 JSON，该轮会记录 `llm_replan_error_count`，并按严格 C4 成功条件记为失败。
+
 先配置 API key：
 
 ```bash
@@ -193,3 +196,5 @@ conda run -n eai-swarm python scripts/stage4_benchmark.py \
 ```
 
 `aggregate.csv` 会额外输出 `avg_llm_replan_count`、`avg_llm_replan_error_count`、`avg_command_revision_rate`、`avg_llm_latency_ms` 和 `max_llm_latency_ms`。C4 的 `task_success` 不只要求安全完成交叉，也要求至少一次 LLM replan 成功且没有 LLM 错误。
+
+阶段四正式结果记录见 `docs/stage4/RESULTS.md`。

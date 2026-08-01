@@ -11,6 +11,10 @@ class LLMProviderTest(unittest.TestCase):
         data = extract_json_object('```json\n{"drone":2,"waypoint":[1,2,3]}\n```')
         self.assertEqual(data["drone"], 2)
 
+    def test_extract_json_ignores_extra_text_after_object(self) -> None:
+        data = extract_json_object('{"drone":2,"waypoint":[1,2,3]}\n说明：已恢复任务')
+        self.assertEqual(data["drone"], 2)
+
     def test_parse_waypoint_plan_clamps_confidence(self) -> None:
         plan = parse_waypoint_plan({"waypoint": [1, 2, 3], "confidence": 2}, default_drone=1)
         self.assertEqual(plan.waypoint, (1.0, 2.0, 3.0))

@@ -194,11 +194,15 @@ class C4Replanner:
         scenario: Scenario,
         targets: dict[str, list[float]],
         max_replans_per_trial: int = 2,
+        max_llm_attempts: int = 3,
+        retry_delay_sec: float = 1.0,
         commander: CommanderLLM | None = None,
     ):
         self.scenario = scenario
         self.targets = targets
         self.max_replans_per_trial = max_replans_per_trial
+        self.max_llm_attempts = max_llm_attempts
+        self.retry_delay_sec = retry_delay_sec
         self.commander = commander or CommanderLLM(load_llm_settings())
         self.stats = C4ReplanStats(
             llm_provider=self.commander.settings.provider,
@@ -234,17 +238,20 @@ class C4Replanner:
         prompt = build_c4_replan_text(self.scenario, self.targets, event, monitor.snapshot())
         started_at = time.perf_counter()
 
-        try:
-            plan = asyncio.run(self.commander.plan(prompt, drone=drone_id, context=[event]))
-            latency_ms = (time.perf_counter() - started_at) * 1000.0
-            validate_stage4_replan(plan, expected_drone=drone_id)
-            command_payload = build_llm_replan_command(
-                plan,
-                event,
-                timestamp_ms=int(time.time_ns() // 1_000_000),
-            )
-            monitor.publish_command(command_payload)
-        except Exception as exc:
+        plan: WaypointPlan | None = None
+        last_error: Exception | None = None
+        api_attempts = 0
+        for api_attempts in range(1, self.max_llm_attempts + 1):
+            try:
+                plan = asyncio.run(self.commander.plan(prompt, drone=drone_id, context=[event]))
+                validate_stage4_replan(plan, expected_drone=drone_id)
+                break
+            except Exception as exc:
+                last_error = exc
+                if api_attempts < self.max_llm_attempts:
+                    time.sleep(self.retry_delay_sec)
+
+        if plan is None:
             latency_ms = (time.perf_counter() - started_at) * 1000.0
             self.stats.llm_replan_error_count += 1
             self.stats.llm_replan_events.append(
@@ -252,11 +259,20 @@ class C4Replanner:
                     "drone": drone_id,
                     "ok": False,
                     "latency_ms": round(latency_ms, 4),
-                    "error": str(exc),
+                    "api_attempts": api_attempts,
+                    "error": str(last_error),
                 }
             )
-            print(f"[stage4-benchmark] C4 LLM replan failed for drone={drone_id}: {exc}")
+            print(f"[stage4-benchmark] C4 LLM replan failed for drone={drone_id}: {last_error}")
             return
+
+        latency_ms = (time.perf_counter() - started_at) * 1000.0
+        command_payload = build_llm_replan_command(
+            plan,
+            event,
+            timestamp_ms=int(time.time_ns() // 1_000_000),
+        )
+        monitor.publish_command(command_payload)
 
         self.stats.llm_replan_latency_ms.append(round(latency_ms, 4))
         self.stats.llm_replan_count += 1
@@ -266,6 +282,7 @@ class C4Replanner:
                 "drone": plan.drone,
                 "ok": True,
                 "latency_ms": round(latency_ms, 4),
+                "api_attempts": api_attempts,
                 "waypoint": list(plan.waypoint),
                 "confidence": plan.confidence,
                 "rationale": plan.rationale,
