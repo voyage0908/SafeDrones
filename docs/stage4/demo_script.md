@@ -51,7 +51,7 @@ safety_gate.py
 
 其中 `perpendicular_crossing` 和 `diagonal_crossing` 会使用和 benchmark runner 相同的高风险参数：MockDrone 使用 `--speed 1.6 --max-accel 2.0`，`marl_pilot.py` 使用 `--rule-safe-distance 0.01 --repulsion-gain 0.0 --max-speed 2.0 --horizon-sec 0.5`。`head_on_crossing` 使用 benchmark 中的默认参数。
 
-脚本会通过 `Scenario.targets_for_seed(seed)` 生成起点和交叉目标，然后先发送起点，等待两架无人机达到该场景的初始分离条件，再等待你按 Enter 注入交叉目标。
+脚本会通过 `Scenario.targets_for_seed(seed)` 生成起点和交叉目标。每个场景会先只启动 broker 和两架 MockDrone，发送起点，并等待两机位置到达 benchmark 起点且速度稳定为 0；你确认 Unity 中的静态起点后按 Enter，脚本才启动 `marl_pilot.py`、`safety_gate.py` 并注入交叉目标。
 
 运行过程中，脚本会提示：
 
@@ -59,9 +59,9 @@ safety_gate.py
 open unity/SwarmUnityDemo in Unity Hub, press Play, then press Enter here
 ```
 
-此时回到 Unity Editor 点击 Play。确认场景里出现 `Drone 1` 和 `Drone 2` 后，再回到终端。脚本会在每个场景达到初始分离后提示你按 Enter 注入交叉目标；默认总入口会依次运行三种场景。
+此时回到 Unity Editor 点击 Play。确认场景里出现 `Drone 1` 和 `Drone 2` 后，再回到终端。脚本会在每个场景达到静止起点后提示你按 Enter 启动 Pilot/Safety Gate 并注入交叉目标；默认总入口会依次运行三种场景。
 
-每个场景开始前，脚本会先发送起点并等待到位；注入危险交叉目标前，会再次等待你按 Enter。这样你可以在 Unity 中清楚观察“起点到位 -> 危险目标注入 -> Safety Gate 接管 -> Pilot 恢复原目标”的完整过程。
+每个场景开始前，脚本会先发送起点并等待位置、速度稳定；注入危险交叉目标前，会再次等待你按 Enter。这样你可以在 Unity 中清楚观察“静止起点 -> 危险目标注入 -> Safety Gate 接管 -> Pilot 恢复原目标”的完整过程。
 
 ## 命令行分步运行
 
@@ -119,7 +119,7 @@ curl -X POST http://127.0.0.1:8000/api/direct-command \
 conda run -n eai-swarm python safety_gate.py
 ```
 
-之后按三种场景依次注入起点和目标。demo 脚本和下面的手工命令使用相同的固定可视化坐标；正式 benchmark runner 才使用 `Scenario.targets_for_seed(seed)` 生成带随机种子的扰动坐标。
+之后按三种场景依次注入起点和目标。下面的手工命令使用便于输入的固定可视化坐标；`scripts/stage4_demo.sh` 和正式 benchmark runner 都使用 `Scenario.targets_for_seed(seed)` 生成带随机种子的 benchmark 坐标。
 
 ### 场景一：正面对冲交叉
 

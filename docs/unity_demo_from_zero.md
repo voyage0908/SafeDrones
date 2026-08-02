@@ -310,10 +310,10 @@ bash scripts/stage4_demo.sh --scenario all --seed 3
 1. 启动 MQTT broker；
 2. 启动 1 号和 2 号 MockDrone；
 3. 等待两架无人机 telemetry 就绪；
-4. 按场景启动 `marl_pilot.py` 和 `safety_gate.py`；
-5. 使用 `Scenario.targets_for_seed(seed)` 生成该轮 benchmark 坐标；
-6. 发送起点并等待初始分离；
-7. 提示你按 Enter 注入危险交叉目标；
+4. 使用 `Scenario.targets_for_seed(seed)` 生成该轮 benchmark 坐标；
+5. 发送起点并等待两机到达 benchmark 起点且速度稳定为 0；
+6. 提示你按 Enter；
+7. 按场景启动 `marl_pilot.py` 和 `safety_gate.py`，再注入危险交叉目标；
 8. 等待两机在避险后继续完成原目标；
 9. 打印最小距离、接管次数、预警次数和最近的 `safety_override` 事件；
 10. 自动关闭当前场景启动的后端进程；默认全场景模式会继续启动下一场景。
@@ -330,7 +330,7 @@ logs/stage4_demo/
 open unity/SwarmUnityDemo in Unity Hub, press Play, then press Enter here
 ```
 
-回到 Unity Editor，点击 Play。确认场景里出现 `Drone 1` 和 `Drone 2` 后，再回到终端。脚本会在每个场景达到初始分离后提示你按 Enter 注入交叉目标；默认总入口会依次运行三种场景。
+回到 Unity Editor，点击 Play。确认场景里出现 `Drone 1` 和 `Drone 2` 后，再回到终端。脚本会在每个场景达到静止起点后提示你按 Enter 启动 Pilot/Safety Gate 并注入交叉目标；默认总入口会依次运行三种场景。
 
 预期现象：
 
@@ -411,7 +411,7 @@ cd $root
 conda run -n eai-swarm python safety_gate.py
 ```
 
-下面依次注入三种阶段四实验场景。每个场景都先发送起点，等两架无人机到位后，再发送危险交叉目标。demo 脚本和下面的手工命令使用相同的固定可视化坐标；正式 benchmark runner 才使用 `Scenario.targets_for_seed(seed)` 生成带随机种子的扰动坐标。
+下面依次注入三种阶段四实验场景。每个场景都先发送起点，等两架无人机到位后，再发送危险交叉目标。下面的手工命令使用便于输入的固定可视化坐标；`scripts/stage4_demo.sh` 和正式 benchmark runner 都使用 `Scenario.targets_for_seed(seed)` 生成带随机种子的 benchmark 坐标。
 
 #### 场景一：正面对冲交叉
 
