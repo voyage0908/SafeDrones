@@ -2,7 +2,9 @@
 
 ## 项目定位
 
-本方案在学术界前沿的**分层控制架构（Hierarchical Control Architecture）**基础上，针对 LLM+MARL 系统中常见的**高层语义决策与低层安全执行脱节**问题，提出**双向安全协议（Bidirectional Safety Protocol）**——包含 Safety Gate（下行否决）和状态反馈（上行报告）两条通道，使低层 Pilot 能够在碰撞风险超过阈值时显式覆盖 LLM 指令并主动通报。由**多模态大模型（VLM/LLM）充当高层"指挥官（Commander）"**，负责低频、全局的语义感知与战术规划；由**多智能体强化学习（MARL）模型或可解释安全控制器充当低层"飞行员（Pilot）"**，负责高频、局部的物理防撞与安全执行，并在必要时否决危险指令。真机资源不足时，单台 Crazyflie 用于验证 Sim-to-Real、通信闭环和单机安全接管，多机碰撞消融与 4v4 对抗主要在 MockDrone/Unity 仿真环境中完成。
+本方案在学术界前沿的**分层控制架构（Hierarchical Control Architecture）**基础上，针对 LLM+MARL 系统中常见的**高层语义决策与低层安全执行脱节**问题，提出**双向安全协议（Bidirectional Safety Protocol）**——包含 Safety Gate（下行否决）和状态反馈（上行报告）两条通道，使运行时安全层能够在碰撞风险超过阈值时显式覆盖高层指令并主动通报。由**多模态大模型（VLM/LLM）充当高层"指挥官（Commander）"**，负责低频、全局的语义感知、战术协同、角色分配和任务级航点规划；由**多智能体强化学习（MARL）模型或可解释规则控制器充当低层"飞行员（Pilot）"**，负责高频、局部的目标追踪和平滑执行；由**独立 Safety Gate** 负责碰撞风险评估、硬安全否决和紧急避险。真机资源不足时，单台 Crazyflie 用于验证 Sim-to-Real、通信闭环和单机安全接管，多机碰撞消融与 4v4 对抗主要在 MockDrone/Unity 仿真环境中完成。
+
+因此本文不把 MARL 训练定位为主要创新，也不让 MARL 承担最终战术决策或最低安全距离保证。LLM/VLA 输出自然语言战术意图、结构化角色、航点和约束；MARL/Rule Pilot 只消费这些结构化目标和本地多机状态，输出短周期 nominal setpoint；Safety Gate 作为独立运行时安全层检查并可覆盖 Pilot 输出。最终 MARL/ONNX 的作用是提供一个更复杂、更自主的低层协同执行基线，用来评估 Safety Gate 在 learned multi-agent tactical behavior 中是否仍能稳定降低碰撞与近失。
 
 ---
 
@@ -10,7 +12,7 @@
 
 近年来，LLM/VLM 与 MARL、无人机集群控制、运行时安全过滤等方向均已有大量工作。因此本文的定位是：**在已有 LLM-MARL 分层架构和安全过滤方法之上，把低层运行时安全否决、结构化上行反馈、LLM 战术修正和消融验证统一成一个可审计的双向安全协议**。
 
-这里将"完全一致"限定为同时满足以下条件：1）LLM/VLM 作为高层 Commander 生成语义战术或航点；2）MARL 或低层 Pilot 负责高频控制；3）低层存在独立 Safety Gate/Shield，可在运行时显式否决高层指令；4）否决原因以结构化事件反馈给 LLM；5）LLM 根据反馈修正后续战术；6）在无人机机群仿真或真机链路中通过 C2/C3/C4 等消融实验验证该协议贡献。
+这里将"完全一致"限定为同时满足以下条件：1）LLM/VLM 作为高层 Commander 生成语义战术、角色分配、约束或航点；2）MARL 或低层 Pilot 负责高频 nominal 控制和目标追踪，而不是硬安全兜底；3）低层存在独立 Safety Gate/Shield，可在运行时显式否决 Pilot 输出或高层指令；4）否决原因以结构化事件反馈给 LLM；5）LLM 根据反馈修正后续战术；6）在无人机机群仿真或真机链路中通过 C2/C3/C4 等消融实验验证该协议贡献。
 
 ### LLM + MARL 分层控制架构（最相关）
 
@@ -62,13 +64,41 @@
 3. **安全贡献缺少直接消融隔离**：许多系统同时改变任务规划、低层策略和安全约束，难以单独回答 Safety Gate 和上行反馈分别贡献了多少；
 4. **LLM 指令缺少运行时约束字段**：高层指令往往不附带置信度、有效期、优先级、命令 ID 和安全边界，低层执行器难以判断何时降级、拒绝或过期丢弃。
 
-本文的工作正是针对上述缺口提出双向安全协议（Bidirectional Safety Protocol）：下行由 Safety Gate 显式否决或平滑接管危险指令，上行由 Pilot 将状态、原因和恢复预期反馈给 LLM，并通过 C2/C3/C4 消融实验分别衡量"单向分层"、"仅有 Safety Gate"和"完整双向反馈"的差异。
+本文的工作正是针对上述缺口提出双向安全协议（Bidirectional Safety Protocol）：下行由 Safety Gate 显式否决或平滑接管危险指令，上行由 Safety Gate/Pilot 将状态、原因和恢复预期反馈给 LLM，并通过 C2/C3/C4 消融实验分别衡量"单向分层"、"仅有 Safety Gate"和"完整双向反馈"的差异。
 
 ---
 
 ## 核心创新：双向安全协议（Bidirectional Safety Protocol）
 
-本文的核心创新不是单独提出 LLM 指挥、MARL 控制或安全避障，这些方向已有相近工作；创新点在于把三者之间的运行时关系协议化：**LLM 只拥有低频战术建议权，低层 Pilot 拥有高频安全否决权，而否决事件必须以结构化、可追踪、可被 LLM 消化的形式返回高层**。这样，系统安全不依赖 LLM 的即时判断，也不把低层安全接管隐藏在不可观察的控制误差中。
+本文的核心创新不是单独提出 LLM 指挥、MARL 控制或安全避障，这些方向已有相近工作；创新点在于把三者之间的运行时关系协议化：**LLM/VLA 拥有低频战术协同与任务级重规划权，MARL/Rule Pilot 负责高频 nominal 执行，独立 Safety Gate 拥有硬安全否决权，而否决事件必须以结构化、可追踪、可被 LLM 消化的形式返回高层**。这样，系统安全不依赖 LLM 的即时判断，也不把低层安全接管隐藏在不可观察的控制误差中。
+
+### LLM/VLA 与 MARL/Pilot 的接口约束
+
+本方案采用语义层与控制层解耦的双通道接口。LLM/VLA 的自然语言战术意图不直接输入 MARL，而是被转换为可执行、可校验的结构化计划：
+
+```json
+{
+  "intent_text": "1号从左侧通过，2号保持右侧间隔，风险解除后继续原目标",
+  "commands": [
+    {
+      "drone": 1,
+      "role": "left_pass",
+      "action": "move_to",
+      "waypoint": [3.0, -0.4, 1.0],
+      "priority": "normal",
+      "ttl_sec": 8.0
+    }
+  ],
+  "constraints": {
+    "keep_min_distance_m": 1.6,
+    "avoid_center_zone": true
+  }
+}
+```
+
+执行层只消费结构化字段。MARL/Rule Pilot 的输入是数值 observation，例如自身位置/速度、目标相对向量、邻机相对位置/速度、可选角色编码和局部感知估计；输出是速度向量或短周期 micro-waypoint。自然语言 `intent_text` 和 `rationale` 用于人类审计、LLM 反馈重规划和论文日志，不作为低层网络的原始输入。
+
+MARL 的训练数据来自仿真 rollout，而不是人工文本标注：环境不断生成多机 episode，记录 `observation, action, reward, next_observation, done`。第一版应使用 vector observation 和小规模 MLP 策略，在 Python/VMAS/Unity ML-Agents 等轻量环境中训练；图片数据属于感知/VLM 数据集，不作为第一版 MARL 的端到端输入。最终评估关注 `MARL only`、`MARL + Safety Gate`、`Rule Pilot + Safety Gate` 和 `C4 双向协议` 的消融差异，尤其是 Safety Gate 在 learned tactical execution 中降低碰撞和近失的贡献。
 
 ### 问题定义
 
@@ -78,7 +108,7 @@
 LLM (Commander) ──单向航点──→ Pilot/MARL ──→ 物理动作
 ```
 
-LLM 下发指令后，如果系统没有显式反馈协议，就难以及时获知执行层的真实状态。已有系统通常会采用三类处理方式：第一类让低层策略通过 reward、动作裁剪或控制误差被动修正危险指令；第二类通过轨迹规划器或安全 filter 在执行前修正动作，但不一定把修正原因反馈给 LLM；第三类让 LLM 在失败后反思，但失败信号往往不是由高频安全层生成的结构化 override 事件。结果是低层 Pilot 即使检测到 LLM 指令将导致碰撞，也可能无法（1）明确接管控制权，（2）通知 LLM "你的指令有问题"，（3）为后续实验留下可审计事件日志。
+LLM 下发指令后，如果系统没有显式反馈协议，就难以及时获知执行层的真实状态。已有系统通常会采用三类处理方式：第一类让低层策略通过 reward、动作裁剪或控制误差被动修正危险指令；第二类通过轨迹规划器或安全 filter 在执行前修正动作，但不一定把修正原因反馈给 LLM；第三类让 LLM 在失败后反思，但失败信号往往不是由高频安全层生成的结构化 override 事件。结果是运行时安全层即使检测到 LLM 指令或 Pilot 输出将导致碰撞，也可能无法（1）明确接管控制权，（2）通知 LLM "你的指令有问题"，（3）为后续实验留下可审计事件日志。
 
 ### 协议设计
 
@@ -93,13 +123,13 @@ LLM (Commander) ───┤
 
 #### 通道 1：Safety Gate（下行否决 + 模式切换）
 
-低层 Pilot 侧维护一个独立于 LLM 的碰撞风险评估器。该评估器可以先由规则/控制屏障函数（Control Barrier Function, CBF）实现，再替换或叠加 MARL 策略网络。当风险超过阈值时，控制模式从"追随 LLM"自动切换为"纯安全避险"：
+低层执行侧维护一个独立于 LLM 和 MARL Pilot 的 Safety Gate 碰撞风险评估器。该评估器可以先由规则/控制屏障函数（Control Barrier Function, CBF）或人工势场实现，后续可升级为更强的安全过滤器，但不应被 nominal MARL Pilot 替代。当风险超过阈值时，控制模式从"追随 LLM/VLA 战术航点"自动切换为"纯安全避险"：
 
 **控制律：**
 
 $$u = \text{clip}\left(\beta \cdot u_{\text{follow\_LLM}} + (1-\beta) \cdot u_{\text{safety}},\; u_{\min},\; u_{\max}\right)$$
 
-其中 $u_{\text{follow\_LLM}}$ 为追踪高层航点的速度/加速度控制量，$u_{\text{safety}}$ 为避障、悬停、降速或返航控制量。最终控制量必须经过速度、加速度、高度、地理围栏和电量等硬约束裁剪。
+其中 $u_{\text{follow\_LLM}}$ 为 Pilot/MARL 追踪高层航点的 nominal 速度/加速度控制量，$u_{\text{safety}}$ 为 Safety Gate 生成的避障、悬停、降速或返航控制量。最终控制量必须经过速度、加速度、高度、地理围栏和电量等硬约束裁剪。
 
 **正常模式**（$\text{collision\_risk} < \theta_{\text{low}}$ 且未处于最小接管保持时间）:
 
@@ -214,7 +244,7 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 | 条件 | LLM→Pilot | Pilot→LLM 反馈 | Safety Gate | 说明 |
 |------|----------|--------------|-------------|------|
 | **C0** (纯 LLM) | 直接控制 | 无 | 无 | 纯 LLM 输出动作，作为仿真中的危险 Baseline；真机只允许限速近失测试 |
-| **C1** (纯 Pilot) | 无 LLM | 无 | 无 | 规则 Pilot 或 MARL Pilot 自主导航 + 防撞 |
+| **C1** (纯 Pilot) | 无 LLM | 无 | 无 | 规则 Pilot 或 MARL Pilot 自主导航，无独立硬安全兜底 |
 | **C2** (单向分层) | 航点 | 无 | 无 | 复现 RALLY/CogSyn 等现有方案 |
 | **C3** (单向 + Gate) | 航点 | 无 | ✅ | 仅加 Safety Gate，无反馈 |
 | **C4** (双向完整) | 航点 | ✅ 反馈 | ✅ | 本方案的完整版本 |
@@ -295,16 +325,16 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 
 ### 阶段四：Benchmark 化 Safety Gate 与低层 Pilot 消融预演 (约 2-3 天)
 
-- **目标**：先建立可复现的安全协议 Benchmark 和 C2/C3/C4 消融流程，其中 C4 必须接入真实 DeepSeek LLM API 做反馈重规划；再把 MARL/ONNX 作为可替换低层 Pilot 接入。阶段四的第一优先级不是训练出复杂 MARL，而是证明 Safety Gate、上行反馈和 LLM 恢复规划的贡献可以被稳定测量。
+- **目标**：先建立可复现的安全协议 Benchmark 和 C2/C3/C4 消融流程，其中 C4 必须接入真实 DeepSeek LLM API 做反馈重规划；再把 MARL/ONNX 作为可替换低层 Pilot 接入。阶段四的第一优先级不是训练出复杂 MARL，而是证明 LLM/VLA 战术航点、低层 nominal Pilot、独立 Safety Gate 和上行反馈之间的接口贡献可以被稳定测量。
 - **具体任务**：
     1. **固定 Benchmark 场景与数据格式**：定义 `head_on_crossing`、`perpendicular_crossing`、`narrow_passage`、`moving_obstacle`、`geofence_violation`、`llm_timeout`、`packet_loss` 等场景。每个场景固定初始位置、目标点、障碍物、随机种子、运行时长和成功条件。
     2. **实现统一指标与日志**：每轮实验落盘 JSONL 事件日志和 CSV 指标，至少包含 `collision_count`、`near_miss_count`、`min_distance_m`、`ttc_violation_count`、`task_success`、`override_count`、`recovery_time_sec`、`path_efficiency`、`latency_breakdown`、`command_revision_rate`。
-    3. **实现 C2/C3/C4 runner**：C2 为单向分层（Pilot 追随 LLM 航点，无 Gate）；C3 为单向 + Safety Gate（有否决但无 LLM 反馈重规划）；C4 为完整双向协议（Gate 触发后向真实 DeepSeek LLM Replanner 上报，随后由 LLM 返回恢复航点、绕行航点或换机指令）。不把规则伪 Replanner 当作 C4 结果。
+    3. **实现 C2/C3/C4 runner**：C2 为单向分层（LLM/VLA 或 Benchmark Commander 下发战术航点，Pilot 追随航点，无 Gate）；C3 为单向 + Safety Gate（有否决但无 LLM 反馈重规划）；C4 为完整双向协议（Gate 触发后向真实 DeepSeek LLM Replanner 上报，随后由 LLM 返回恢复航点、绕行航点或换机指令）。不把规则伪 Replanner 当作 C4 结果。
     4. **完善 Safety Gate 模块**：编写并测试 `safety_gate.py`，维护独立于 MARL 策略网络的碰撞风险评估器。第一版使用规则/CBF/人工势场实现 $u_{\text{safety}}$，必须避免"只悬停不恢复"的死锁；高风险时接管，风险下降后恢复追踪。
     5. **实现碰撞风险评估器**：基于多机相对距离、接近速率、预测碰撞时间（TTC）和软围栏约束，实时计算 `collision_risk ∈ [0, 1]`，并记录触发对象、风险来源和恢复耗时。
-    6. **实现低层 Pilot 基线**：先提供 Rule Pilot 作为可解释基线，输出高频速度向量或短周期安全 setpoint；再预留 MARL Pilot 接口，保证 observation/action schema 固定。
-    7. **公共 Benchmark 对齐**：至少选择一个公共环境（VMAS/PettingZoo/MPE/Safety-Gymnasium/gym-pybullet-drones）复现同类 crossing 或 navigation 任务，并用相同指标记录 Rule Pilot / MARL Pilot / Safety Gate 的差异。
-    8. **MARL/ONNX 后置接入**：在 Benchmark harness 稳定后，再在 Unity ML-Agents、VMAS 或 gym-pybullet-drones 中训练 MARL Pilot。收敛后导出 `.onnx`，用 Python `onnxruntime` 接入 `marl_pilot.py`，与 Rule Pilot 在同一套场景中对比。
+    6. **实现低层 Pilot 基线**：先提供 Rule Pilot 作为可解释 nominal 执行基线，输出高频速度向量或短周期 micro-waypoint；Rule Pilot 不承担硬安全避险，侧向安全分离和最低安全距离由 Safety Gate 负责。再预留 MARL Pilot 接口，保证 observation/action schema 固定。
+    7. **公共 Benchmark 对齐**：至少选择一个公共环境（VMAS/PettingZoo/MPE/Safety-Gymnasium/gym-pybullet-drones）复现同类 crossing 或 navigation 任务，并用相同指标记录 Rule Pilot / MARL Pilot / Safety Gate 的差异。MARL 只作为 learned nominal Pilot，不作为本文主要算法贡献。
+    8. **MARL/ONNX 后置接入**：在 Benchmark harness 稳定后，再在 Unity ML-Agents、VMAS 或 gym-pybullet-drones 中训练 MARL Pilot。训练目标是更平滑地执行 LLM/VLA 给出的战术航点、减少不必要接管、提高任务效率；收敛后导出 `.onnx`，用 Python `onnxruntime` 接入 `marl_pilot.py`，与 Rule Pilot 在同一套场景中对比。
     9. **阶段验证**：
         - 固定交叉航线场景中，C3 必须触发 Safety Gate、保持最小安全距离，并能在风险解除后继续完成任务；
         - C3 vs C2 至少完成 10 个随机种子统计，输出碰撞率/近失率/接管次数/恢复时间对比；
@@ -366,8 +396,8 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 ### 第四天：Benchmark 化 Safety Gate + 双向安全协议部署与验证（核心实验）
 
 #### 1. 课题描述
-在第三天的单向分层架构基础上，部署本方案的核心创新——**双向安全协议**，并把验证方式从单次 demo 改为固定 Benchmark 消融。加载 Safety Gate 模块、低层 Pilot、MQTT 反向反馈通道和 DeepSeek LLM Replanner，验证当 LLM 下发危险指令时，低层 Pilot 能够显式接管控制权、上报原因，随后由 LLM 消费 override 事件并发布任务级恢复航点。
-工作流程：1. 使用规则 Pilot 作为第一版低层控制基线，后续可替换为 ONNX MARL Pilot；2. 部署 Safety Gate 模块（碰撞风险评估器 + β 平滑切换/安全恢复逻辑）；3. 编写本地高频控制回路（20Hz-50Hz），持续注入无人机当前坐标和 VLM 的宏观目标点，MQTT 只负责低频命令和事件；4. 配置 MQTT 反向通道，使 Pilot 在接管事件时向 LLM 网关发送 `override` 和 `status` 消息；5. 在固定 Benchmark 场景中运行 C2/C3/C4 消融，C4 必须真实调用 DeepSeek API 完成反馈重规划；6. 在单台真机上只复现虚拟障碍、越界航点或过近目标点等受控危险输入，验证 Safety Gate 能否阻止危险动作并记录 Sim-to-Real 数据。
+在第三天的单向分层架构基础上，部署本方案的核心创新——**双向安全协议**，并把验证方式从单次 demo 改为固定 Benchmark 消融。加载 Safety Gate 模块、低层 Pilot、MQTT 反向反馈通道和 DeepSeek LLM Replanner，验证当 LLM/VLA 下发危险战术航点或 Pilot 输出危险 micro-waypoint 时，独立 Safety Gate 能够显式接管控制权、上报原因，随后由 LLM 消费 override 事件并发布任务级恢复航点。
+工作流程：1. 使用规则 Pilot 作为第一版低层 nominal 控制基线，后续可替换为 ONNX MARL Pilot；2. 部署 Safety Gate 模块（碰撞风险评估器 + β 平滑切换/安全恢复逻辑）；3. 编写本地高频控制回路（20Hz-50Hz），持续注入无人机当前坐标和 VLM 的宏观目标点，MQTT 只负责低频命令和事件；4. 配置 MQTT 反向通道，使 Safety Gate/Pilot 在接管事件时向 LLM 网关发送 `override` 和 `status` 消息；5. 在固定 Benchmark 场景中运行 C2/C3/C4 消融，C4 必须真实调用 DeepSeek API 完成反馈重规划；6. 在单台真机上只复现虚拟障碍、越界航点或过近目标点等受控危险输入，验证 Safety Gate 能否阻止危险动作并记录 Sim-to-Real 数据。
 
 #### 2. 课题目的
 验证双向安全协议的有效性，并保证结果可复现、可对比。核心问题包括：Safety Gate 能否可靠检测风险并接管；接管是否会导致任务死锁；DeepSeek 收到结构化 override 后是否能生成有效恢复航点；同一危险场景下 C3/C4 相比 C2 是否显著降低碰撞率和近失率。
@@ -375,24 +405,24 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 #### 3. 验收评分
 - **基础技能（60分）**：在 Python 边缘控制网关中成功部署规则 Pilot + Safety Gate，跑通 C3 条件（单向 + Gate）的仿真多机控制流程。Safety Gate 能发布 `safety_override` 和 `safety_status`，并在固定交叉航线中保持最小安全距离。单台真机能完成越界航点拒绝、限速悬停或虚拟障碍避让。
 - **进阶技能（80分）**：完成 C3 vs C2 的固定 Benchmark 消融对比。多机相撞航点在 MockDrone/Unity 中复现；C2 记录碰撞/近失/风险升高，C3 记录主动接管、最小距离、恢复时间和任务完成率。每个核心场景至少运行 10 个随机种子，并导出 JSONL/CSV 结果。
-- **卓越技能（100分）**：完成 **C4（双向完整协议）**的全链路验证。DeepSeek LLM Replanner 在收到 Pilot 回传的覆盖通知后，能据此调整后续战术（如重新规划恢复航点、绕行路线或替换执行机；真机只有一台时，替换执行机在仿真中验证）。采集 C0-C4 五组仿真消融数据，并至少接入一个公共 Benchmark 环境用于外部对齐。产出包含碰撞率对比、安全接管统计、偏离-恢复时间、LLM 指令修正率和 LLM 延迟等指标的学术图表。
+- **卓越技能（100分）**：完成 **C4（双向完整协议）**的全链路验证。DeepSeek LLM Replanner 在收到 Safety Gate/Pilot 回传的覆盖通知后，能据此调整后续战术（如重新规划恢复航点、绕行路线或替换执行机；真机只有一台时，替换执行机在仿真中验证）。采集 C0-C4 五组仿真消融数据，并至少接入一个公共 Benchmark 环境用于外部对齐。产出包含碰撞率对比、安全接管统计、偏离-恢复时间、LLM 指令修正率和 LLM 延迟等指标的学术图表。
 
 ---
 
 ### 第五天：MARL/ONNX Pilot 接入、Benchmark 扩展与科研数据整合
 
 #### 1. 课题描述
-在第四天已经稳定的 Benchmark harness 上接入真正的 MARL/ONNX Pilot，并开展最终的多机集群对抗（4v4）。第五天不再从零开始设计 Benchmark，而是扩大场景规模、补公共环境对齐、采集多种 Pilot 和协议条件下的数据，系统性整理科研结果。
+在第四天已经稳定的 Benchmark harness 上接入真正的 MARL/ONNX Pilot，并开展最终的多机集群对抗（4v4）。第五天不再从零开始设计 Benchmark，而是扩大场景规模、补公共环境对齐、采集多种 Pilot 和协议条件下的数据，系统性整理科研结果。这里的 MARL 不是高层战术大脑，而是 learned low-level multi-agent motion controller；多机战术协同（分工、包抄、等待、恢复航点）由 LLM/VLA Commander 输出，MARL/Rule Pilot 负责把结构化战术目标平滑执行，Safety Gate 负责运行时硬安全。
 工作流程：
-1. 在 Unity ML-Agents、VMAS 或 gym-pybullet-drones 中训练低层 MARL Pilot，固定 observation/action schema；
+1. 在 Unity ML-Agents、VMAS 或 gym-pybullet-drones 中训练低层 MARL Pilot，固定 observation/action schema；训练数据来自仿真 rollout，而不是自然语言文本，输入为自身状态、目标相对向量、邻机相对位置/速度和可选角色编码；
 2. 导出 `.onnx` 策略网络，并用 Python `onnxruntime` 接入 `marl_pilot.py`；
 3. 在同一套 Benchmark 场景中对比 Rule Pilot、Rule Pilot + Gate、MARL Pilot、MARL Pilot + Gate、C4 双向协议；
-4. 开启全仿真链路：Unity 场景渲染画面 → VLM 接收图像生成战术航点 → 航点下发至 Pilot + Safety Gate → Pilot 结合多机状态高频输出控制量 → 驱动 Unity 仿真无人机集群（4v4）协同围堵移动目标；
+4. 开启全仿真链路：Unity 场景渲染画面 → VLM/LLM 接收图像和状态生成战术意图、角色和航点 → 结构化战术命令下发至 Pilot + Safety Gate → Pilot 结合多机状态高频输出 nominal setpoint → Safety Gate 检查并可覆盖 → 驱动 Unity 仿真无人机集群（4v4）协同围堵移动目标；
 5. 在 Unity 环境中开展对抗演练："红军（传统规则/人类玩家操控）vs 蓝军（分层 AI 控制集群 + Safety Gate）"；
 6. 运行仿真数据采集系统，导出三维轨迹、决策时延、碰撞率、安全接管统计与对战胜率，完成科研闭环。
 
 #### 2. 课题目的
-实现复杂智能系统在数字孪生环境中的全链路集成，验证 MARL Pilot 相比规则 Pilot 的增益，并完成系统性 Benchmark 评价与科研成果图表整理。
+实现复杂智能系统在数字孪生环境中的全链路集成，验证 LLM/VLA 战术协同、MARL/Rule Pilot 低层执行和 Safety Gate 硬安全之间的接口贡献；MARL Pilot 相比规则 Pilot 的增益作为次要结果，系统性 Benchmark 评价和协议消融仍是主线。
 
 #### 3. 验收评分
 - **基础技能（60分）**：完成 Unity 仿真全链路系统联调。4 架以上虚拟无人机能够稳定运行在 Rule Pilot + Safety Gate 架构下，系统无崩溃或消息死锁，并能落盘标准 JSONL/CSV 日志。
