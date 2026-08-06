@@ -81,8 +81,16 @@ def main() -> None:
     parser.add_argument("--rule-safe-distance", type=float, default=1.6)
     parser.add_argument("--repulsion-gain", type=float, default=1.2)
     parser.add_argument("--override-hold-sec", type=float, default=1.5)
+    parser.add_argument(
+        "--drone-ids",
+        type=int,
+        nargs="*",
+        default=None,
+        help="只控制这些 drone id，默认空=控制全部",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
+    pilot_drone_ids: set[int] | None = set(args.drone_ids) if args.drone_ids else None
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -171,6 +179,8 @@ def main() -> None:
             timestamp_ms = int(time.time_ns() // 1_000_000)
             snapshot_list = list(snapshots.values())
             for snapshot in snapshot_list:
+                if pilot_drone_ids is not None and snapshot.drone_id not in pilot_drone_ids:
+                    continue
                 if now < override_until.get(snapshot.drone_id, 0.0):
                     continue
 

@@ -47,8 +47,16 @@ def main() -> None:
     parser.add_argument("--hold-sec", type=float, default=1.0)
     parser.add_argument("--override-command-interval", type=float, default=0.5)
     parser.add_argument("--status-interval", type=float, default=1.0)
+    parser.add_argument(
+        "--protect-ids",
+        type=int,
+        nargs="*",
+        default=None,
+        help="只保护这些 drone id，默认空=保护全部",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
+    protect_ids: set[int] | None = set(args.protect_ids) if args.protect_ids else None
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -102,6 +110,8 @@ def main() -> None:
                 last_status_publish = now
 
             for decision in decisions:
+                if protect_ids is not None and decision.drone not in protect_ids:
+                    continue
                 if decision.mode == "override":
                     first_override = decision.drone not in active_overrides
                     last_publish = last_override_command_publish.get(decision.drone, 0.0)

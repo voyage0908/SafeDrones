@@ -48,10 +48,11 @@ def command(drone_id: int, target: list[float], label: str) -> dict[str, Any]:
 
 
 class Stage4Monitor:
-    def __init__(self, host: str, port: int, qos: int):
+    def __init__(self, host: str, port: int, qos: int, expected_drones: int = 2):
         self.host = host
         self.port = port
         self.qos = qos
+        self.expected_drones = expected_drones
         self.connected = threading.Event()
         self.telemetry_ready = threading.Event()
         self.lock = threading.Lock()
@@ -86,7 +87,7 @@ class Stage4Monitor:
 
     def wait_for_telemetry(self, timeout: float) -> None:
         if not self.telemetry_ready.wait(timeout=timeout):
-            raise SystemExit("timed out waiting for telemetry from both drones")
+            raise SystemExit(f"timed out waiting for telemetry from {self.expected_drones} drone(s)")
 
     def wait_until(self, predicate, timeout: float, label: str) -> bool:
         deadline = time.time() + timeout
@@ -171,13 +172,21 @@ class Stage4Monitor:
 
         with self.lock:
             self.telemetry[drone_id] = payload
-            if {1, 2}.issubset(self.telemetry):
-                p1 = self.telemetry[1].get("position")
-                p2 = self.telemetry[2].get("position")
-                if p1 is not None and p2 is not None:
-                    current_distance = dist(p1, p2)
-                    if self.min_distance_m is None or current_distance < self.min_distance_m:
-                        self.min_distance_m = current_distance
+            # 全配对最小距离（N >= 2 时计算）
+            ids_with_pos = [
+                did
+                for did, pld in self.telemetry.items()
+                if pld.get("position") is not None
+            ]
+            if len(ids_with_pos) >= 2:
+                for i in range(len(ids_with_pos)):
+                    for j in range(i + 1, len(ids_with_pos)):
+                        pa = self.telemetry[ids_with_pos[i]]["position"]
+                        pb = self.telemetry[ids_with_pos[j]]["position"]
+                        current_distance = dist(pa, pb)
+                        if self.min_distance_m is None or current_distance < self.min_distance_m:
+                            self.min_distance_m = current_distance
+            if len(self.telemetry) >= self.expected_drones:
                 self.telemetry_ready.set()
 
 

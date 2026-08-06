@@ -93,7 +93,12 @@ class Stage4BenchmarkScenarioTest(unittest.TestCase):
     def test_all_scenario_names_are_supported(self) -> None:
         for scenario_name in SCENARIO_NAMES:
             scenario = Scenario(scenario_name)
-            self.assertEqual(scenario.targets_for_seed(0)["drone1_start"][2], scenario.targets_for_seed(0)["drone2_start"][2])
+            targets = scenario.targets_for_seed(0)
+            all_ids = scenario.all_ids()
+            # 所有无人机起始高度一致
+            first_z = targets[f"drone{all_ids[0]}_start"][2]
+            for did in all_ids:
+                self.assertAlmostEqual(targets[f"drone{did}_start"][2], first_z)
 
     def test_write_aggregate_csv_groups_by_scenario_and_condition(self) -> None:
         results = [
