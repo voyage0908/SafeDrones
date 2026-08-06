@@ -72,5 +72,44 @@ unity/SwarmUnityDemo
 
 Keep the Python package directory `swarm/` separate from the Unity project. Do not place Unity `Assets/`, `Packages/`, `ProjectSettings/`, or `Library/` under the Python `swarm/` package.
 
+## Additional Commands
+
+Smoke-test the MQTT → MockDrone loop:
+
+```bash
+conda run -n eai-swarm python scripts/smoke_stage1.py
+```
+
+Publish a manual waypoint without the gateway:
+
+```bash
+conda run -n eai-swarm python scripts/publish_command.py --drone-id 1 --target 5 5 2
+```
+
+Start the MARL pilot (rule-based fallback):
+
+```bash
+conda run -n eai-swarm python marl_pilot.py
+```
+
+Start the Safety Gate:
+
+```bash
+conda run -n eai-swarm python safety_gate.py
+```
+
+Run the stage-four ablation benchmark:
+
+```bash
+conda run -n eai-swarm python scripts/stage4_benchmark.py \
+  --scenario head_on_crossing --conditions C2,C3 --seeds 10 --out results/stage4
+```
+
+## Platform Notes
+
+- The benchmark runner (`scripts/stage4_benchmark.py`) uses `os.killpg` / `start_new_session`, which behave differently on Windows. It has been adapted with platform-aware process management (fallback to `process.terminate()` / `subprocess.CREATE_NEW_PROCESS_GROUP`).
+- When cleaning up after a run on Windows, use `taskkill //F //IM python.exe` (or equivalent) if subprocesses persist.
+- On Linux the full C2/C3/C4 ablation suite has been verified (see `docs/stage4/RESULTS.md`).
+
 ## Documents writing
 Write all the documents in Chinese.

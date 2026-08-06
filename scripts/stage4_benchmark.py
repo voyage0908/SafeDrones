@@ -306,13 +306,16 @@ class ManagedService:
 
     def start(self) -> None:
         self.log_file = self.log_path.open("wb")
-        self.process = subprocess.Popen(
-            self.argv,
-            cwd=ROOT_DIR,
+        kwargs: dict[str, Any] = dict(
+            cwd=str(ROOT_DIR),
             stdout=self.log_file,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
         )
+        if hasattr(os, "killpg"):
+            kwargs["start_new_session"] = True
+        else:
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+        self.process = subprocess.Popen(self.argv, **kwargs)
 
     def ensure_running(self) -> None:
         if self.process is None:
@@ -324,15 +327,24 @@ class ManagedService:
     def stop(self) -> None:
         if self.process is not None and self.process.poll() is None:
             try:
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                if hasattr(os, "killpg"):
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                else:
+                    self.process.terminate()
                 self.process.wait(timeout=5)
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 if self.process.poll() is None:
                     try:
-                        os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                    except ProcessLookupError:
+                        if hasattr(os, "killpg"):
+                            os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                        else:
+                            self.process.kill()
+                    except (ProcessLookupError, OSError):
                         pass
-                    self.process.wait(timeout=5)
+                    try:
+                        self.process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
         if self.log_file is not None:
             self.log_file.close()
 
