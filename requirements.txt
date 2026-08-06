@@ -1,4 +1,5 @@
 paho-mqtt>=2.0,<3.0
+opencv-python>=4.10
 amqtt>=0.11,<0.12
 fastapi>=0.140,<0.141
 uvicorn>=0.51,<0.52
