@@ -6,6 +6,13 @@ import logging
 import time
 from typing import Any
 
+from swarm.safety import (
+    DroneSnapshot,
+    SafetyDecision,
+    SafetyGate,
+    build_override_event,
+    build_safety_command,
+)
 from swarm.simulation import MockDroneState, parse_command
 
 
@@ -31,6 +38,67 @@ def build_mqtt_client(client_id: str):
         return mqtt.Client(client_id=client_id)
 
 
+def build_self_snapshot(state: MockDroneState, timestamp_ms: int) -> DroneSnapshot:
+    return DroneSnapshot(
+        drone_id=state.drone_id,
+        position=state.current_pos,
+        target=state.target_pos,
+        velocity=state.velocity,
+        speed_mps=state.speed_mps,
+        status=state.status,
+        last_command_id=state.last_command_id,
+        timestamp_ms=timestamp_ms,
+    )
+
+
+def read_peer_snapshots(peer_trajectories: dict[int, str]) -> list[DroneSnapshot]:
+    """Read the latest ground-truth record from each peer's local trajectory file.
+
+    This simulates onboard local sensing: the data path never touches MQTT.
+    """
+    snapshots: list[DroneSnapshot] = []
+    for path in peer_trajectories.values():
+        try:
+            last_line = None
+            with open(path, encoding="utf-8") as file:
+                for line in file:
+                    line = line.strip()
+                    if line:
+                        last_line = line
+        except OSError:
+            continue
+        if last_line is None:
+            continue
+        try:
+            snapshots.append(DroneSnapshot.from_telemetry(json.loads(last_line)))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+    return snapshots
+
+
+def onboard_gate_tick(
+    state: MockDroneState,
+    gate: SafetyGate,
+    peer_trajectories: dict[int, str],
+    timestamp_ms: int,
+) -> SafetyDecision | None:
+    """Evaluate the local safety gate and apply the safety command directly.
+
+    Returns the override decision when the gate took over, else None.
+    """
+    snapshots = [build_self_snapshot(state, timestamp_ms)]
+    snapshots.extend(read_peer_snapshots(peer_trajectories))
+
+    for decision in gate.evaluate(snapshots):
+        if decision.drone != state.drone_id:
+            continue
+        if decision.mode == "override":
+            command_payload = build_safety_command(decision)
+            state.apply_command(parse_command(json.dumps(command_payload)))
+            return decision
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one MQTT-backed mock drone.")
     parser.add_argument("--drone-id", type=int, default=1)
@@ -44,6 +112,23 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=0.1, help="Telemetry/update interval in seconds.")
     parser.add_argument("--qos", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--log-trajectory",
+        default=None,
+        help="Optional path for a local JSONL ground-truth trajectory log (bypasses MQTT).",
+    )
+    parser.add_argument(
+        "--onboard-gate",
+        action="store_true",
+        help="Run the safety gate locally inside the drone process (no MQTT in the safety loop).",
+    )
+    parser.add_argument(
+        "--peer-trajectory",
+        action="append",
+        default=[],
+        metavar="ID=PATH",
+        help="Peer drone trajectory file used by the onboard gate as local sensing.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -74,12 +159,32 @@ def main() -> None:
     telemetry_topic = f"swarm/drone/{args.drone_id}/telemetry"
     client = build_mqtt_client(client_id=f"mock-drone-{args.drone_id}")
 
+    peer_trajectories: dict[int, str] = {}
+    for entry in args.peer_trajectory:
+        if "=" not in entry:
+            raise SystemExit(f"--peer-trajectory must be ID=PATH, got: {entry}")
+        peer_id_raw, peer_path = entry.split("=", 1)
+        peer_id = int(peer_id_raw)
+        if peer_id == args.drone_id:
+            raise SystemExit("--peer-trajectory must not reference the drone itself")
+        peer_trajectories[peer_id] = peer_path
+
+    onboard_gate = SafetyGate() if args.onboard_gate else None
+    runtime = {"onboard_override": False}
+
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
         LOGGER.info("connected to MQTT broker %s:%s with result=%s", args.host, args.port, reason_code)
         client.subscribe(command_topic, qos=args.qos)
         LOGGER.info("subscribed command topic: %s", command_topic)
 
     def on_message(client: Any, userdata: Any, message: Any) -> None:
+        if runtime["onboard_override"]:
+            try:
+                raw = json.loads(message.payload.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return
+            if raw.get("priority") != "safety":
+                return
         try:
             command = parse_command(message.payload)
             state.apply_command(command)
@@ -96,6 +201,11 @@ def main() -> None:
     LOGGER.info("publishing telemetry topic: %s", telemetry_topic)
     last_tick = time.monotonic()
 
+    trajectory_file = None
+    if args.log_trajectory:
+        trajectory_file = open(args.log_trajectory, "w", encoding="utf-8")
+        LOGGER.info("logging ground-truth trajectory to %s", args.log_trajectory)
+
     try:
         while True:
             now = time.monotonic()
@@ -103,12 +213,33 @@ def main() -> None:
             last_tick = now
 
             state.update(dt_sec)
+            if onboard_gate is not None:
+                decision = onboard_gate_tick(state, onboard_gate, peer_trajectories, now_ms())
+                was_overridden = runtime["onboard_override"]
+                runtime["onboard_override"] = decision is not None
+                if decision is not None and not was_overridden:
+                    event = build_override_event(decision)
+                    client.publish(
+                        "swarm/commander/override",
+                        payload=json.dumps(event, separators=(",", ":")),
+                        qos=args.qos,
+                    )
+                    LOGGER.warning(
+                        "onboard override: risk=%.3f target=%s",
+                        decision.risk_level,
+                        decision.target_drone,
+                    )
             payload = json.dumps(state.telemetry(now_ms()), separators=(",", ":"))
             client.publish(telemetry_topic, payload=payload, qos=args.qos, retain=False)
+            if trajectory_file is not None:
+                trajectory_file.write(payload + "\n")
+                trajectory_file.flush()
             time.sleep(args.interval)
     except KeyboardInterrupt:
         LOGGER.info("stopping mock drone")
     finally:
+        if trajectory_file is not None:
+            trajectory_file.close()
         client.loop_stop()
         client.disconnect()
 

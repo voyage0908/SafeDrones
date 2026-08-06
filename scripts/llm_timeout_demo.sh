@@ -188,10 +188,16 @@ def start_state_settled(snapshot, targets, position_tolerance_m=0.08, velocity_t
     return True
 
 
-def wait_for_stable_start(monitor, scenario, targets, timeout, stable_sec=0.8) -> None:
+def wait_for_stable_start(monitor, scenario, targets, timeout, commands=(), stable_sec=0.8) -> None:
     deadline = time.time() + timeout
     stable_since = None
+    next_publish = 0.0
     while time.time() < deadline:
+        now = time.monotonic()
+        if commands and now >= next_publish:
+            for payload in commands:
+                monitor.publish_command(payload)
+            next_publish = now + 1.0
         snapshot = monitor.snapshot()
         settled = scenario.is_separated(snapshot) and start_state_settled(snapshot, targets)
         now = time.time()
@@ -223,10 +229,18 @@ try:
     if phase == "prepare":
         print("[demo] benchmark targets:")
         print(json.dumps(targets, ensure_ascii=False, indent=2))
-        monitor.publish_command(command(1, targets["drone1_start"], "separate"))
-        monitor.publish_command(command(2, targets["drone2_start"], "separate"))
-        print("[demo] start commands published")
-        wait_for_stable_start(monitor, scenario, targets, timeout=scenario.separation_timeout + 6.0)
+        start_commands = [
+            command(1, targets["drone1_start"], "separate"),
+            command(2, targets["drone2_start"], "separate"),
+        ]
+        print("[demo] start commands published (with periodic republish)")
+        wait_for_stable_start(
+            monitor,
+            scenario,
+            targets,
+            timeout=scenario.separation_timeout + 6.0,
+            commands=start_commands,
+        )
         raise SystemExit(0)
 
     if phase != "cross":
@@ -240,13 +254,21 @@ try:
     )
 
     cross_started_at = time.time()
-    monitor.publish_command(command(1, targets["drone1_goal"], "cross"))
-    monitor.publish_command(command(2, targets["drone2_goal"], "cross"))
-    print("[demo] crossing goals published")
+    goal_commands = [
+        command(1, targets["drone1_goal"], "cross"),
+        command(2, targets["drone2_goal"], "cross"),
+    ]
+    print("[demo] crossing goals published (with periodic republish)")
 
     swap_completed = False
     deadline = time.time() + scenario.cross_timeout + scenario.llm_delay_sec + 10.0
+    next_publish = 0.0
     while time.time() < deadline:
+        now = time.monotonic()
+        if now >= next_publish:
+            for payload in goal_commands:
+                monitor.publish_command(payload)
+            next_publish = now + 2.0
         replanner.process_new_overrides(monitor)
         if scenario.is_complete(monitor.snapshot()):
             swap_completed = True

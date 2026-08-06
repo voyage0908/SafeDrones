@@ -690,16 +690,50 @@ def stop_services(services: list[ManagedService]) -> None:
     time.sleep(0.5)
 
 
+def wait_with_republish(
+    monitor: Stage4Monitor,
+    predicate: Any,
+    commands: list[dict[str, Any]],
+    timeout: float,
+    label: str,
+    republish_interval_sec: float = 2.0,
+) -> bool:
+    """Wait for predicate while republishing key commands so they survive packet loss."""
+    deadline = time.time() + timeout
+    next_publish = 0.0
+    while time.time() < deadline:
+        now = time.monotonic()
+        if now >= next_publish:
+            for payload in commands:
+                monitor.publish_command(payload)
+            next_publish = now + republish_interval_sec
+        if predicate():
+            return True
+        time.sleep(0.1)
+
+    print(f"[stage4-check] timed out waiting for {label}")
+    return False
+
+
 def wait_for_crossing_completion(
     condition: str,
     scenario: Scenario,
     monitor: Stage4Monitor,
     timeout: float,
     replanner: C4Replanner | None = None,
-    red_controller: RedPursuitController | None = None,
+    red_controller: "RedPursuitController | None" = None,
+    republish_commands: list[dict[str, Any]] | None = None,
+    republish_interval_sec: float = 2.0,
 ) -> bool:
     deadline = time.time() + timeout
+    next_publish = 0.0
     while time.time() < deadline:
+        if republish_commands:
+            now = time.monotonic()
+            if now >= next_publish:
+                for payload in republish_commands:
+                    monitor.publish_command(payload)
+                next_publish = now + republish_interval_sec
         if replanner is not None:
             replanner.process_new_overrides(monitor)
         if red_controller is not None:
@@ -736,20 +770,24 @@ def run_trial(
         monitor.start()
         monitor.wait_for_telemetry(timeout=8)
 
-        for did in scenario.all_ids():
-            monitor.publish_command(command(did, targets[f"drone{did}_start"], "separate"))
-        separated = monitor.wait_until(
+        start_commands = [
+            command(did, targets[f"drone{did}_start"], "separate")
+            for did in scenario.all_ids()
+        ]
+        separated = wait_with_republish(
+            monitor,
             lambda: scenario.is_separated(monitor.snapshot()),
+            start_commands,
             timeout=scenario.separation_timeout,
             label=f"{condition} seed={seed} initial separation",
         )
 
         cross_started_at = time.time()
-        if separated:
-            for did in scenario.all_ids():
-                if scenario.red_pursuit and did in scenario.red_ids:
-                    continue  # 红方追击机不设固定 goal
-                monitor.publish_command(command(did, targets[f"drone{did}_goal"], "cross"))
+        goal_commands = [
+            command(did, targets[f"drone{did}_goal"], "cross")
+            for did in scenario.all_ids()
+            if not (scenario.red_pursuit and did in scenario.red_ids)
+        ]
 
         swap_completed = separated and wait_for_crossing_completion(
             condition=condition,
@@ -758,6 +796,7 @@ def run_trial(
             timeout=scenario.cross_timeout,
             replanner=replanner,
             red_controller=red_controller,
+            republish_commands=goal_commands,
         )
         if replanner is not None:
             replanner.process_new_overrides(monitor)

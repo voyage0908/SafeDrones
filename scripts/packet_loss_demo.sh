@@ -12,6 +12,7 @@ SEED=0
 DROP_RATE=0.2
 INTERACTIVE=1
 PROXY_PORT=1884
+GATE_MODE="network"
 PIDS=()
 CLEANED=0
 CURRENT_LOG_DIR=""
@@ -20,7 +21,7 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/packet_loss_demo.sh [--scenario head_on_crossing|perpendicular_crossing|diagonal_crossing|llm_timeout]
-                                   [--seed 0-9] [--drop-rate 0.2] [--non-interactive]
+                                   [--seed 0-9] [--drop-rate 0.2] [--gate-mode network|onboard] [--non-interactive]
 
 All business processes (drones / Pilot / Safety Gate / monitor) connect through
 scripts/mqtt_lossy_proxy.py on port 1884, which randomly drops MQTT PUBLISH
@@ -65,6 +66,14 @@ parse_args() {
         DROP_RATE="$2"
         shift 2
         ;;
+      --gate-mode)
+        if (($# < 2)); then
+          echo "[demo] --gate-mode requires a value" >&2
+          exit 2
+        fi
+        GATE_MODE="$2"
+        shift 2
+        ;;
       --non-interactive)
         INTERACTIVE=0
         shift
@@ -95,6 +104,15 @@ parse_args() {
     echo "[demo] seed must be an integer from 0 to 9, got: $SEED" >&2
     exit 2
   fi
+
+  case "$GATE_MODE" in
+    network | onboard)
+      ;;
+    *)
+      echo "[demo] unsupported gate mode: $GATE_MODE (expected network|onboard)" >&2
+      exit 2
+      ;;
+  esac
 }
 
 scenario_runtime_args() {
@@ -199,14 +217,16 @@ run_scene_phase() {
   local phase="$1"
   (
     cd "$ROOT_DIR"
-    conda run -n eai-swarm --no-capture-output python -u - "$SCENARIO" "$SEED" "$phase" "$PROXY_PORT" <<'PY'
+    conda run -n eai-swarm --no-capture-output python -u - "$SCENARIO" "$SEED" "$phase" "$PROXY_PORT" "$CURRENT_LOG_DIR" <<'PY'
 import json
 import math
+import os
 import sys
 import time
 
 from scripts.stage4_benchmark import Scenario
 from scripts.stage4_marl_safety_check import Stage4Monitor, command
+from scripts.trajectory_analysis import true_min_distance
 
 
 def vector_distance(a, b) -> float:
@@ -234,10 +254,16 @@ def start_state_settled(snapshot, targets, position_tolerance_m=0.08, velocity_t
     return True
 
 
-def wait_for_stable_start(monitor, scenario, targets, timeout, stable_sec=0.8) -> None:
+def wait_for_stable_start(monitor, scenario, targets, timeout, commands=(), stable_sec=0.8) -> None:
     deadline = time.time() + timeout
     stable_since = None
+    next_publish = 0.0
     while time.time() < deadline:
+        now = time.monotonic()
+        if commands and now >= next_publish:
+            for payload in commands:
+                monitor.publish_command(payload)
+            next_publish = now + 1.0
         snapshot = monitor.snapshot()
         settled = scenario.is_separated(snapshot) and start_state_settled(snapshot, targets)
         now = time.time()
@@ -257,6 +283,7 @@ scenario = Scenario(sys.argv[1])
 seed = int(sys.argv[2])
 phase = sys.argv[3]
 port = int(sys.argv[4])
+log_dir = sys.argv[5]
 targets = scenario.targets_for_seed(seed)
 
 print(f"[demo] scenario={scenario.name} seed={seed} mqtt_port={port} (lossy proxy)")
@@ -270,39 +297,73 @@ try:
     if phase == "prepare":
         print("[demo] benchmark targets:")
         print(json.dumps(targets, ensure_ascii=False, indent=2))
-        monitor.publish_command(command(1, targets["drone1_start"], "separate"))
-        monitor.publish_command(command(2, targets["drone2_start"], "separate"))
-        print("[demo] start commands published")
-        wait_for_stable_start(monitor, scenario, targets, timeout=scenario.separation_timeout + 10.0)
+        start_commands = [
+            command(1, targets["drone1_start"], "separate"),
+            command(2, targets["drone2_start"], "separate"),
+        ]
+        print("[demo] start commands published (with periodic republish)")
+        wait_for_stable_start(
+            monitor,
+            scenario,
+            targets,
+            timeout=scenario.separation_timeout + 10.0,
+            commands=start_commands,
+        )
         raise SystemExit(0)
 
     if phase != "cross":
         raise SystemExit(f"[demo] unsupported phase: {phase}")
 
     cross_started_at = time.time()
-    monitor.publish_command(command(1, targets["drone1_goal"], "cross"))
-    monitor.publish_command(command(2, targets["drone2_goal"], "cross"))
-    print("[demo] crossing goals published")
+    cross_started_ms = int(cross_started_at * 1000)
+    goal_commands = [
+        command(1, targets["drone1_goal"], "cross"),
+        command(2, targets["drone2_goal"], "cross"),
+    ]
+    print("[demo] crossing goals published (with periodic republish)")
 
-    swap_completed = monitor.wait_until(
-        lambda: scenario.is_complete(monitor.snapshot()),
-        timeout=scenario.cross_timeout + 10.0,
-        label=f"{scenario.name} seed={seed} position swap",
-    )
+    swap_completed = False
+    deadline = time.time() + scenario.cross_timeout + 10.0
+    next_publish = 0.0
+    while time.time() < deadline:
+        now = time.monotonic()
+        if now >= next_publish:
+            for payload in goal_commands:
+                monitor.publish_command(payload)
+            next_publish = now + 2.0
+        if scenario.is_complete(monitor.snapshot()):
+            swap_completed = True
+            break
+        time.sleep(0.1)
     duration = time.time() - cross_started_at
+    true_min = true_min_distance(
+        [
+            os.path.join(log_dir, "drone1_trajectory.jsonl"),
+            os.path.join(log_dir, "drone2_trajectory.jsonl"),
+        ],
+        start_ms=cross_started_ms,
+    )
     summary = monitor.summary(swap_completed=swap_completed)
     summary["scenario"] = scenario.name
     summary["seed"] = seed
     summary["crossing_duration_sec"] = round(duration, 4)
+    summary["mqtt_observed_min_distance_m"] = summary["min_distance_m"]
+    summary["true_min_distance_m"] = None if true_min is None else round(true_min, 4)
 
     print("[demo] summary:")
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
 
     if not swap_completed:
         raise SystemExit("[demo] drones did not complete the crossing under packet loss")
-    if summary["min_distance_m"] is not None and summary["min_distance_m"] < 0.25:
-        raise SystemExit("[demo] collision detected under packet loss")
-    print("[demo] packet loss survived: crossing completed without collision")
+    collision_reference = summary["true_min_distance_m"]
+    if collision_reference is None:
+        collision_reference = summary["min_distance_m"]
+    if collision_reference is not None and collision_reference < 0.25:
+        raise SystemExit("[demo] collision detected under packet loss (ground truth)")
+    print(
+        "[demo] packet loss survived: crossing completed without collision "
+        f"(true min distance: {collision_reference}m)"
+    )
 finally:
     monitor.stop()
 PY
@@ -337,9 +398,16 @@ read -r -a DRONE_ARGS <<<"$(scenario_runtime_args drone)"
 PILOT_ARGS=()
 read -r -a PILOT_ARGS <<<"$(scenario_runtime_args pilot)"
 
-start_service drone1 python mock_drone.py --drone-id 1 --port "$PROXY_PORT" "${DRONE_ARGS[@]}"
+DRONE1_EXTRA=()
+DRONE2_EXTRA=()
+if [[ "$GATE_MODE" == "onboard" ]]; then
+  DRONE1_EXTRA=(--onboard-gate --peer-trajectory "2=$CURRENT_LOG_DIR/drone2_trajectory.jsonl")
+  DRONE2_EXTRA=(--onboard-gate --peer-trajectory "1=$CURRENT_LOG_DIR/drone1_trajectory.jsonl")
+fi
+
+start_service drone1 python mock_drone.py --drone-id 1 --port "$PROXY_PORT" --log-trajectory "$CURRENT_LOG_DIR/drone1_trajectory.jsonl" "${DRONE_ARGS[@]}" "${DRONE1_EXTRA[@]}"
 drone1_pid="$(last_pid)"
-start_service drone2 python mock_drone.py --drone-id 2 --port "$PROXY_PORT" "${DRONE_ARGS[@]}"
+start_service drone2 python mock_drone.py --drone-id 2 --port "$PROXY_PORT" --log-trajectory "$CURRENT_LOG_DIR/drone2_trajectory.jsonl" "${DRONE_ARGS[@]}" "${DRONE2_EXTRA[@]}"
 drone2_pid="$(last_pid)"
 sleep 2
 ensure_running "drone1" "$drone1_pid" "$CURRENT_LOG_DIR/drone1.log"
@@ -354,11 +422,17 @@ fi
 
 start_service marl_pilot python marl_pilot.py --port "$PROXY_PORT" "${PILOT_ARGS[@]}"
 pilot_pid="$(last_pid)"
-start_service safety_gate python safety_gate.py --port "$PROXY_PORT"
-gate_pid="$(last_pid)"
+if [[ "$GATE_MODE" == "network" ]]; then
+  start_service safety_gate python safety_gate.py --port "$PROXY_PORT"
+  gate_pid="$(last_pid)"
+fi
 sleep 2
 ensure_running "marl_pilot" "$pilot_pid" "$CURRENT_LOG_DIR/marl_pilot.log"
-ensure_running "safety_gate" "$gate_pid" "$CURRENT_LOG_DIR/safety_gate.log"
+if [[ "$GATE_MODE" == "network" ]]; then
+  ensure_running "safety_gate" "$gate_pid" "$CURRENT_LOG_DIR/safety_gate.log"
+else
+  echo "[demo] onboard gate mode: safety runs inside each drone process, no network safety_gate"
+fi
 
 run_scene_phase cross
 
