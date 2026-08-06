@@ -22,3 +22,4 @@ deepseek_api_key
 *.user
 *.pidb
 *.booproj
+tests/fixtures
