@@ -606,6 +606,7 @@ def build_services(
     packet_loss_rate: float = 0.0,
     packet_loss_seed: int = 0,
     start_positions: dict[int, list[float]] | None = None,
+    gate_mode: str = "network",
 ) -> tuple[list[ManagedService], int]:
     python = sys.executable
     mqtt_port = 1883
@@ -634,19 +635,29 @@ def build_services(
         )
     port_args = ["--port", str(mqtt_port)]
     # 多机 mock_drone（有起点时直接在起点出生，避免原点重合聚集）
+    onboard = gate_mode == "onboard" and condition in {"C3", "C4"}
     for did in scenario.all_ids():
         drone_cmd = [python, "mock_drone.py", "--drone-id", str(did), *port_args, *scenario.drone_args()]
         if start_positions and did in start_positions:
             position = start_positions[did]
             drone_cmd += ["--start-position", f"{position[0]},{position[1]},{position[2]}"]
+        drone_cmd += ["--log-trajectory", str(log_dir / f"drone{did}_trajectory.jsonl")]
+        if onboard:
+            drone_cmd += ["--onboard-gate"]
+            for peer_id in scenario.all_ids():
+                if peer_id != did:
+                    drone_cmd += [
+                        "--peer-trajectory",
+                        f"{peer_id}={log_dir / f'drone{peer_id}_trajectory.jsonl'}",
+                    ]
         services.append(ManagedService(f"drone{did}", drone_cmd, log_dir))
     # marl_pilot（仅控制蓝方）
     pilot_cmd = [python, "marl_pilot.py", *port_args, *scenario.pilot_args()]
     if scenario.blue_ids:
         pilot_cmd += ["--drone-ids"] + [str(d) for d in scenario.blue_ids]
     services.append(ManagedService("marl_pilot", pilot_cmd, log_dir))
-    # safety_gate（仅保护蓝方）
-    if condition in {"C3", "C4"}:
+    # safety_gate（仅保护蓝方；onboard 模式下安全逻辑在各无人机进程内）
+    if condition in {"C3", "C4"} and gate_mode == "network":
         gate_cmd = [python, "safety_gate.py", *port_args]
         if scenario.blue_ids:
             gate_cmd += ["--protect-ids"] + [str(d) for d in scenario.blue_ids]
@@ -754,6 +765,7 @@ def run_trial(
     seed: int,
     log_dir: Path,
     packet_loss_rate: float = 0.0,
+    gate_mode: str = "network",
 ) -> dict[str, Any]:
     targets = scenario.targets_for_seed(seed)
     services, mqtt_port = build_services(
@@ -763,6 +775,7 @@ def run_trial(
         packet_loss_rate=packet_loss_rate,
         packet_loss_seed=seed,
         start_positions={did: targets[f"drone{did}_start"] for did in scenario.all_ids()},
+        gate_mode=gate_mode,
     )
     monitor = Stage4Monitor("127.0.0.1", mqtt_port, qos=0,
                             expected_drones=scenario.drone_count)
@@ -848,6 +861,7 @@ def run_trial(
             "llm_replan_events": llm_stats.llm_replan_events,
             "crossing_duration_sec": round(crossing_duration_sec, 4),
             "packet_loss_rate": packet_loss_rate,
+            "gate_mode": gate_mode,
             "final_positions": summary["final_positions"],
             "final_statuses": summary["final_statuses"],
             "log_dir": str(log_dir),
@@ -985,6 +999,12 @@ def main() -> None:
         default=0.0,
         help="Fraction of MQTT PUBLISH packets to drop via the lossy proxy (0 disables it).",
     )
+    parser.add_argument(
+        "--gate-mode",
+        choices=["network", "onboard"],
+        default="network",
+        help="Where the safety gate runs: network process (default) or onboard each drone.",
+    )
     args = parser.parse_args()
 
     if args.seeds <= 0:
@@ -1009,7 +1029,14 @@ def main() -> None:
                     trial_log_dir = logs_dir / scenario.name / f"{condition}_seed_{seed}"
                     trial_log_dir.mkdir(parents=True, exist_ok=True)
                     print(f"[stage4-benchmark] scenario={scenario.name} condition={condition} seed={seed}")
-                    result = run_trial(condition, scenario, seed, trial_log_dir, packet_loss_rate=args.packet_loss)
+                    result = run_trial(
+                        condition,
+                        scenario,
+                        seed,
+                        trial_log_dir,
+                        packet_loss_rate=args.packet_loss,
+                        gate_mode=args.gate_mode,
+                    )
                     results.append(result)
                     runs_file.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
                     runs_file.flush()

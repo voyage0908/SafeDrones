@@ -185,7 +185,7 @@ class SafetyGate:
             reason = "collision_risk_exceeded" if mode == "override" else None
             safety_waypoint = (
                 safety_diversion_waypoint(snapshot, worst, self.config)
-                if mode == "override" and worst is not None
+                if mode in {"override", "warning"} and worst is not None
                 else None
             )
             decisions.append(

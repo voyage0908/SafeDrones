@@ -81,10 +81,14 @@ def onboard_gate_tick(
     gate: SafetyGate,
     peer_trajectories: dict[int, str],
     timestamp_ms: int,
+    follow_target: tuple[float, float, float] | None = None,
 ) -> SafetyDecision | None:
-    """Evaluate the local safety gate and apply the safety command directly.
+    """Evaluate the local safety gate and apply the blended command directly.
 
-    Returns the override decision when the gate took over, else None.
+    Implements the plan.md control law: beta = 1 in normal mode (full follow),
+    beta decays linearly in warning mode (blend follow + safety waypoint),
+    beta = 0 in override mode (full safety diversion). Returns the decision
+    for this drone, or None if the gate produced none.
     """
     snapshots = [build_self_snapshot(state, timestamp_ms)]
     snapshots.extend(read_peer_snapshots(peer_trajectories))
@@ -92,10 +96,54 @@ def onboard_gate_tick(
     for decision in gate.evaluate(snapshots):
         if decision.drone != state.drone_id:
             continue
+
         if decision.mode == "override":
             command_payload = build_safety_command(decision)
             state.apply_command(parse_command(json.dumps(command_payload)))
             return decision
+
+        if decision.mode == "warning" and follow_target is not None and decision.safety_waypoint is not None:
+            config = gate.config
+            beta = (config.high_threshold - decision.risk_level) / (
+                config.high_threshold - config.low_threshold
+            )
+            beta = max(0.0, min(1.0, beta))
+            blended = tuple(
+                beta * follow + (1.0 - beta) * safety
+                for follow, safety in zip(follow_target, decision.safety_waypoint)
+            )
+            state.apply_command(
+                parse_command(
+                    json.dumps(
+                        {
+                            "drone": state.drone_id,
+                            "action": "move_to",
+                            "target": list(blended),
+                            "priority": "safety",
+                            "command_id": f"onboard-blend-{timestamp_ms}-{state.drone_id}",
+                            "timestamp_ms": timestamp_ms,
+                        }
+                    )
+                )
+            )
+            return decision
+
+        if follow_target is not None:
+            state.apply_command(
+                parse_command(
+                    json.dumps(
+                        {
+                            "drone": state.drone_id,
+                            "action": "move_to",
+                            "target": list(follow_target),
+                            "priority": "normal",
+                            "command_id": f"onboard-follow-{state.drone_id}",
+                            "timestamp_ms": timestamp_ms,
+                        }
+                    )
+                )
+            )
+        return decision
     return None
 
 
@@ -187,7 +235,7 @@ def main() -> None:
         peer_trajectories[peer_id] = peer_path
 
     onboard_gate = SafetyGate() if args.onboard_gate else None
-    runtime = {"onboard_override": False}
+    runtime: dict[str, Any] = {"onboard_override": False, "pilot_target": None}
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
         LOGGER.info("connected to MQTT broker %s:%s with result=%s", args.host, args.port, reason_code)
@@ -195,12 +243,21 @@ def main() -> None:
         LOGGER.info("subscribed command topic: %s", command_topic)
 
     def on_message(client: Any, userdata: Any, message: Any) -> None:
-        if runtime["onboard_override"]:
+        if onboard_gate is not None:
+            # 机载 Gate 模式：非 safety 指令只记录为追随意图，实际输出由 Gate 每 tick 决定
             try:
                 raw = json.loads(message.payload.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return
             if raw.get("priority") != "safety":
+                target_value = raw.get("target", raw.get("waypoint"))
+                if target_value is not None:
+                    try:
+                        runtime["pilot_target"] = tuple(float(value) for value in target_value)
+                    except (TypeError, ValueError):
+                        LOGGER.warning("ignored malformed command target on %s", message.topic)
+                elif raw.get("action") == "hover":
+                    runtime["pilot_target"] = state.current_pos
                 return
         try:
             command = parse_command(message.payload)
@@ -231,10 +288,15 @@ def main() -> None:
 
             state.update(dt_sec)
             if onboard_gate is not None:
-                decision = onboard_gate_tick(state, onboard_gate, peer_trajectories, now_ms())
-                was_overridden = runtime["onboard_override"]
-                runtime["onboard_override"] = decision is not None
-                if decision is not None and not was_overridden:
+                decision = onboard_gate_tick(
+                    state,
+                    onboard_gate,
+                    peer_trajectories,
+                    now_ms(),
+                    runtime.get("pilot_target"),
+                )
+                override_active = decision is not None and decision.mode == "override"
+                if override_active and not runtime["onboard_override"]:
                     event = build_override_event(decision)
                     client.publish(
                         "swarm/commander/override",
@@ -246,6 +308,7 @@ def main() -> None:
                         decision.risk_level,
                         decision.target_drone,
                     )
+                runtime["onboard_override"] = override_active
             payload = json.dumps(state.telemetry(now_ms()), separators=(",", ":"))
             client.publish(telemetry_topic, payload=payload, qos=args.qos, retain=False)
             if trajectory_file is not None:

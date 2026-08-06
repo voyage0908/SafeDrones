@@ -70,7 +70,10 @@ class OnboardGateTickTest(unittest.TestCase):
                 target_pos=(5.0, 0.0, 1.0),
                 speed_mps=1.0,
             )
-            decision = onboard_gate_tick(state, SafetyGate(), {2: str(peer_path)}, timestamp_ms=200)
+            decision = onboard_gate_tick(
+                state, SafetyGate(), {2: str(peer_path)}, timestamp_ms=200,
+                follow_target=(5.0, 0.0, 1.0),
+            )
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.mode, "override")
@@ -88,10 +91,53 @@ class OnboardGateTickTest(unittest.TestCase):
                 target_pos=(5.0, 0.0, 1.0),
                 speed_mps=1.0,
             )
-            decision = onboard_gate_tick(state, SafetyGate(), {2: str(peer_path)}, timestamp_ms=200)
+            decision = onboard_gate_tick(
+                state, SafetyGate(), {2: str(peer_path)}, timestamp_ms=200,
+                follow_target=(5.0, 0.0, 1.0),
+            )
 
-        self.assertIsNone(decision)
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.mode, "normal")
         self.assertEqual(state.target_pos, (5.0, 0.0, 1.0))
+        self.assertEqual(state.last_command_id, "onboard-follow-1")
+
+    def test_warning_mode_blends_follow_and_safety(self) -> None:
+        with TemporaryDirectory() as tmp:
+            peer_path = Path(tmp) / "peer.jsonl"
+            # Peer at 1.0m with zero velocities: risk = 1 - 1.0/1.6 = 0.375,
+            # inside the warning band (0.32, 0.70).
+            write_lines(peer_path, [telemetry_line(2, [1.0, 0.0, 1.0], 100)])
+
+            follow = (5.0, 0.0, 1.0)
+            state = MockDroneState(
+                drone_id=1,
+                current_pos=(0.0, 0.0, 1.0),
+                target_pos=follow,
+                speed_mps=1.0,
+            )
+            gate = SafetyGate()
+            decision = onboard_gate_tick(
+                state, gate, {2: str(peer_path)}, timestamp_ms=200, follow_target=follow,
+            )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.mode, "warning")
+        self.assertIsNotNone(decision.safety_waypoint)
+
+        config = gate.config
+        beta = (config.high_threshold - decision.risk_level) / (
+            config.high_threshold - config.low_threshold
+        )
+        expected = tuple(
+            beta * f + (1.0 - beta) * s
+            for f, s in zip(follow, decision.safety_waypoint)
+        )
+        self.assertTrue(str(state.last_command_id).startswith("onboard-blend-"))
+        for actual, want in zip(state.target_pos, expected):
+            self.assertAlmostEqual(actual, want, places=3)
+        # blended target must differ from both endpoints
+        self.assertNotEqual(tuple(state.target_pos), follow)
+        self.assertNotEqual(tuple(state.target_pos), tuple(decision.safety_waypoint))
 
 
 if __name__ == "__main__":
