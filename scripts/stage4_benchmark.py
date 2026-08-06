@@ -25,7 +25,7 @@ from swarm.llm_provider import CommanderLLM, LLMProviderError, WaypointPlan, loa
 
 
 SUPPORTED_CONDITIONS = {"C2", "C3", "C4"}
-SCENARIO_NAMES = ["head_on_crossing", "perpendicular_crossing", "diagonal_crossing"]
+SCENARIO_NAMES = ["head_on_crossing", "perpendicular_crossing", "diagonal_crossing", "llm_timeout"]
 
 
 @dataclass(frozen=True)
@@ -35,27 +35,38 @@ class Scenario:
     cross_timeout: float = 30.0
     near_miss_distance_m: float = 0.8
     collision_distance_m: float = 0.25
+    llm_delay_sec: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.name == "llm_timeout" and self.llm_delay_sec == 0.0:
+            object.__setattr__(self, "llm_delay_sec", 4.0)
+
+    def _geometry(self) -> str:
+        if self.name == "llm_timeout":
+            return "head_on_crossing"
+        return self.name
 
     def targets_for_seed(self, seed: int) -> dict[str, list[float]]:
         rng = random.Random(seed)
         lateral_offset = rng.uniform(-0.15, 0.15)
         z_offset = rng.uniform(-0.03, 0.03)
         altitude = 1.0 + z_offset
-        if self.name == "head_on_crossing":
+        geometry = self._geometry()
+        if geometry == "head_on_crossing":
             return {
                 "drone1_start": [-3.0, lateral_offset, altitude],
                 "drone2_start": [3.0, -lateral_offset, altitude],
                 "drone1_goal": [3.0, -lateral_offset, altitude],
                 "drone2_goal": [-3.0, lateral_offset, altitude],
             }
-        if self.name == "perpendicular_crossing":
+        if geometry == "perpendicular_crossing":
             return {
                 "drone1_start": [-3.0, lateral_offset, altitude],
                 "drone2_start": [lateral_offset, -3.0, altitude],
                 "drone1_goal": [3.0, -lateral_offset, altitude],
                 "drone2_goal": [-lateral_offset, 3.0, altitude],
             }
-        if self.name == "diagonal_crossing":
+        if geometry == "diagonal_crossing":
             return {
                 "drone1_start": [-3.0, -3.0 + lateral_offset, altitude],
                 "drone2_start": [-3.0, 3.0 - lateral_offset, altitude],
@@ -69,11 +80,12 @@ class Scenario:
         p2 = snapshot.get(2, {}).get("position")
         if p1 is None or p2 is None:
             return False
-        if self.name == "head_on_crossing":
+        geometry = self._geometry()
+        if geometry == "head_on_crossing":
             return p1[0] < -2.0 and p2[0] > 2.0
-        if self.name == "perpendicular_crossing":
+        if geometry == "perpendicular_crossing":
             return p1[0] < -2.0 and p2[1] < -2.0
-        if self.name == "diagonal_crossing":
+        if geometry == "diagonal_crossing":
             return p1[0] < -2.0 and p1[1] < -2.0 and p2[0] < -2.0 and p2[1] > 2.0
         raise ValueError(f"unsupported scenario: {self.name}")
 
@@ -82,16 +94,17 @@ class Scenario:
         p2 = snapshot.get(2, {}).get("position")
         if p1 is None or p2 is None:
             return False
-        if self.name == "head_on_crossing":
+        geometry = self._geometry()
+        if geometry == "head_on_crossing":
             return p1[0] > 2.0 and p2[0] < -2.0
-        if self.name == "perpendicular_crossing":
+        if geometry == "perpendicular_crossing":
             return p1[0] > 2.0 and p2[1] > 2.0
-        if self.name == "diagonal_crossing":
+        if geometry == "diagonal_crossing":
             return p1[0] > 2.0 and p1[1] > 2.0 and p2[0] > 2.0 and p2[1] < -2.0
         raise ValueError(f"unsupported scenario: {self.name}")
 
     def pilot_args(self) -> list[str]:
-        if self.name in {"perpendicular_crossing", "diagonal_crossing"}:
+        if self._geometry() in {"perpendicular_crossing", "diagonal_crossing"}:
             return [
                 "--rule-safe-distance",
                 "0.01",
@@ -105,7 +118,7 @@ class Scenario:
         return []
 
     def drone_args(self) -> list[str]:
-        if self.name in {"perpendicular_crossing", "diagonal_crossing"}:
+        if self._geometry() in {"perpendicular_crossing", "diagonal_crossing"}:
             return ["--speed", "1.6", "--max-accel", "2.0"]
         return []
 
@@ -236,6 +249,8 @@ class C4Replanner:
         drone_id = int(event.get("drone") or 0)
         self.stats.llm_replan_attempts += 1
         prompt = build_c4_replan_text(self.scenario, self.targets, event, monitor.snapshot())
+        if self.scenario.llm_delay_sec > 0:
+            time.sleep(self.scenario.llm_delay_sec)
         started_at = time.perf_counter()
 
         plan: WaypointPlan | None = None
@@ -260,6 +275,7 @@ class C4Replanner:
                     "ok": False,
                     "latency_ms": round(latency_ms, 4),
                     "api_attempts": api_attempts,
+                    "injected_delay_sec": self.scenario.llm_delay_sec,
                     "error": str(last_error),
                 }
             )
@@ -283,6 +299,7 @@ class C4Replanner:
                 "ok": True,
                 "latency_ms": round(latency_ms, 4),
                 "api_attempts": api_attempts,
+                "injected_delay_sec": self.scenario.llm_delay_sec,
                 "waypoint": list(plan.waypoint),
                 "confidence": plan.confidence,
                 "rationale": plan.rationale,
@@ -356,34 +373,92 @@ def parse_conditions(raw: str) -> list[str]:
     return conditions
 
 
-def build_services(condition: str, scenario: Scenario, log_dir: Path) -> list[ManagedService]:
+def build_services(
+    condition: str,
+    scenario: Scenario,
+    log_dir: Path,
+    packet_loss_rate: float = 0.0,
+    packet_loss_seed: int = 0,
+) -> tuple[list[ManagedService], int]:
     python = sys.executable
+    mqtt_port = 1883
     services = [
         ManagedService("broker", [python, "scripts/dev_broker.py"], log_dir),
-        ManagedService("drone1", [python, "mock_drone.py", "--drone-id", "1", *scenario.drone_args()], log_dir),
-        ManagedService("drone2", [python, "mock_drone.py", "--drone-id", "2", *scenario.drone_args()], log_dir),
-        ManagedService("marl_pilot", [python, "marl_pilot.py", *scenario.pilot_args()], log_dir),
     ]
+    if packet_loss_rate > 0:
+        mqtt_port = 1884
+        services.append(
+            ManagedService(
+                "mqtt_proxy",
+                [
+                    python,
+                    "scripts/mqtt_lossy_proxy.py",
+                    "--listen-port",
+                    "1884",
+                    "--target-port",
+                    "1883",
+                    "--drop-rate",
+                    str(packet_loss_rate),
+                    "--seed",
+                    str(packet_loss_seed),
+                ],
+                log_dir,
+            )
+        )
+    port_args = ["--port", str(mqtt_port)]
+    services.extend(
+        [
+            ManagedService(
+                "drone1",
+                [python, "mock_drone.py", "--drone-id", "1", *port_args, *scenario.drone_args()],
+                log_dir,
+            ),
+            ManagedService(
+                "drone2",
+                [python, "mock_drone.py", "--drone-id", "2", *port_args, *scenario.drone_args()],
+                log_dir,
+            ),
+            ManagedService(
+                "marl_pilot",
+                [python, "marl_pilot.py", *port_args, *scenario.pilot_args()],
+                log_dir,
+            ),
+        ]
+    )
     if condition in {"C3", "C4"}:
-        services.append(ManagedService("safety_gate", [python, "safety_gate.py"], log_dir))
-    return services
+        services.append(ManagedService("safety_gate", [python, "safety_gate.py", *port_args], log_dir))
+    return services, mqtt_port
 
 
-def start_services(services: list[ManagedService]) -> None:
-    services[0].start()
+def start_services(services: list[ManagedService], mqtt_port: int) -> None:
+    by_name = {service.name: service for service in services}
+    broker = by_name["broker"]
+    broker.start()
     wait_for_tcp("127.0.0.1", 1883, timeout_sec=30)
-    services[0].ensure_running()
+    broker.ensure_running()
 
-    for service in services[1:3]:
+    proxy = by_name.get("mqtt_proxy")
+    if proxy is not None:
+        proxy.start()
+        wait_for_tcp("127.0.0.1", mqtt_port, timeout_sec=30)
+        proxy.ensure_running()
+
+    drones = [service for service in services if service.name.startswith("drone")]
+    others = [
+        service
+        for service in services
+        if service not in drones and service.name not in {"broker", "mqtt_proxy"}
+    ]
+    for service in drones:
         service.start()
     time.sleep(2)
-    for service in services[1:3]:
+    for service in drones:
         service.ensure_running()
 
-    for service in services[3:]:
+    for service in others:
         service.start()
     time.sleep(2)
-    for service in services[3:]:
+    for service in others:
         service.ensure_running()
 
 
@@ -412,13 +487,25 @@ def wait_for_crossing_completion(
     return False
 
 
-def run_trial(condition: str, scenario: Scenario, seed: int, log_dir: Path) -> dict[str, Any]:
-    services = build_services(condition, scenario, log_dir)
-    monitor = Stage4Monitor("127.0.0.1", 1883, qos=0)
+def run_trial(
+    condition: str,
+    scenario: Scenario,
+    seed: int,
+    log_dir: Path,
+    packet_loss_rate: float = 0.0,
+) -> dict[str, Any]:
+    services, mqtt_port = build_services(
+        condition,
+        scenario,
+        log_dir,
+        packet_loss_rate=packet_loss_rate,
+        packet_loss_seed=seed,
+    )
+    monitor = Stage4Monitor("127.0.0.1", mqtt_port, qos=0)
     targets = scenario.targets_for_seed(seed)
     replanner = C4Replanner(scenario, targets) if condition == "C4" else None
     try:
-        start_services(services)
+        start_services(services, mqtt_port)
         monitor.start()
         monitor.wait_for_telemetry(timeout=8)
 
@@ -484,6 +571,7 @@ def run_trial(condition: str, scenario: Scenario, seed: int, log_dir: Path) -> d
             "llm_max_latency_ms": llm_stats.max_latency_ms,
             "llm_replan_events": llm_stats.llm_replan_events,
             "crossing_duration_sec": round(crossing_duration_sec, 4),
+            "packet_loss_rate": packet_loss_rate,
             "final_positions": summary["final_positions"],
             "final_statuses": summary["final_statuses"],
             "log_dir": str(log_dir),
@@ -516,6 +604,7 @@ def write_summary_csv(path: Path, results: list[dict[str, Any]]) -> None:
         "llm_avg_latency_ms",
         "llm_max_latency_ms",
         "crossing_duration_sec",
+        "packet_loss_rate",
         "log_dir",
     ]
     with path.open("w", encoding="utf-8", newline="") as file:
@@ -614,10 +703,18 @@ def main() -> None:
     parser.add_argument("--conditions", default="C2,C3")
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--out", default="results/stage4")
+    parser.add_argument(
+        "--packet-loss",
+        type=float,
+        default=0.0,
+        help="Fraction of MQTT PUBLISH packets to drop via the lossy proxy (0 disables it).",
+    )
     args = parser.parse_args()
 
     if args.seeds <= 0:
         raise SystemExit("--seeds must be positive")
+    if not 0.0 <= args.packet_loss <= 1.0:
+        raise SystemExit("--packet-loss must be between 0 and 1")
 
     conditions = parse_conditions(args.conditions)
     scenarios = [Scenario(name) for name in (SCENARIO_NAMES if args.scenario == "all" else [args.scenario])]
@@ -636,7 +733,7 @@ def main() -> None:
                     trial_log_dir = logs_dir / scenario.name / f"{condition}_seed_{seed}"
                     trial_log_dir.mkdir(parents=True, exist_ok=True)
                     print(f"[stage4-benchmark] scenario={scenario.name} condition={condition} seed={seed}")
-                    result = run_trial(condition, scenario, seed, trial_log_dir)
+                    result = run_trial(condition, scenario, seed, trial_log_dir, packet_loss_rate=args.packet_loss)
                     results.append(result)
                     runs_file.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
                     runs_file.flush()
