@@ -129,6 +129,12 @@ def main() -> None:
         metavar="ID=PATH",
         help="Peer drone trajectory file used by the onboard gate as local sensing.",
     )
+    parser.add_argument(
+        "--start-position",
+        default=None,
+        metavar="X,Y,Z",
+        help="Spawn position, e.g. --start-position -3,0,1 (default: shared origin).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -147,8 +153,19 @@ def main() -> None:
     if args.interval <= 0:
         raise SystemExit("--interval must be positive")
 
+    start_position = (0.0, 0.0, 0.0)
+    if args.start_position:
+        try:
+            start_position = tuple(float(value) for value in args.start_position.split(","))
+        except ValueError:
+            raise SystemExit(f"--start-position must be X,Y,Z numbers, got: {args.start_position}")
+        if len(start_position) != 3:
+            raise SystemExit(f"--start-position must have exactly 3 values, got: {args.start_position}")
+
     state = MockDroneState(
         drone_id=args.drone_id,
+        current_pos=start_position,
+        target_pos=start_position,
         speed_mps=args.speed,
         max_accel_mps2=args.max_accel,
         max_yaw_rate_dps=args.max_yaw_rate,

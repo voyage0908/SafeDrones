@@ -106,6 +106,16 @@ class Stage4Monitor:
         with self.lock:
             return list(self.events)
 
+    def reset_min_distance(self) -> None:
+        """Reset min-distance tracking (e.g. after initial separation).
+
+        Mock drones all spawn at the shared origin, so pairwise distance is
+        zero before separation; the meaningful measurement starts once the
+        trial's initial separation has been reached.
+        """
+        with self.lock:
+            self.min_distance_m = None
+
     def summary(self, swap_completed: bool) -> dict[str, Any]:
         with self.lock:
             positions = {

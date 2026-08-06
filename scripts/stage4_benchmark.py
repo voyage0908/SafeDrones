@@ -6,6 +6,7 @@ import csv
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -136,47 +137,48 @@ class Scenario:
         if geometry == "pursuit_intercept":
             return {
                 "drone1_start": [-3.0, -0.5 + lateral_offset, altitude],
-                "drone2_start": [-3.0,  0.5 + lateral_offset, altitude],
+                "drone3_start": [-3.0,  0.5 + lateral_offset, altitude],
                 "drone1_goal":  [ 3.0, -0.5 + lateral_offset, altitude],
-                "drone2_goal":  [ 3.0,  0.5 + lateral_offset, altitude],
-                "drone3_start": [ 0.0,  3.0, altitude],
+                "drone3_goal":  [ 3.0,  0.5 + lateral_offset, altitude],
+                "drone2_start": [ 0.0,  3.0, altitude],
                 "drone4_start": [ 0.0, -3.0, altitude],
-                "drone3_goal":  [ 3.0, -0.5 + lateral_offset, altitude],
+                "drone2_goal":  [ 3.0, -0.5 + lateral_offset, altitude],
                 "drone4_goal":  [ 3.0,  0.5 + lateral_offset, altitude],
             }
         if geometry == "formation_crossing":
             return {
                 "drone1_start": [-3.0,  0.0 + lateral_offset, altitude],
-                "drone2_start": [-3.0, -1.0 + lateral_offset, altitude],
-                "drone3_start": [-3.0,  1.0 + lateral_offset, altitude],
+                "drone3_start": [-3.0, -1.0 + lateral_offset, altitude],
+                "drone5_start": [-3.0,  1.0 + lateral_offset, altitude],
                 "drone1_goal":  [ 3.0,  0.0 + lateral_offset, altitude],
-                "drone2_goal":  [ 3.0, -1.0 + lateral_offset, altitude],
-                "drone3_goal":  [ 3.0,  1.0 + lateral_offset, altitude],
-                "drone4_start": [ 3.0,  1.5 + lateral_offset, altitude],
-                "drone5_start": [ 3.0, -1.5 + lateral_offset, altitude],
-                "drone4_goal":  [-3.0, -1.5 + lateral_offset, altitude],
-                "drone5_goal":  [-3.0,  1.5 + lateral_offset, altitude],
+                "drone3_goal":  [ 3.0, -1.0 + lateral_offset, altitude],
+                "drone5_goal":  [ 3.0,  1.0 + lateral_offset, altitude],
+                "drone2_start": [ 3.0,  1.5 + lateral_offset, altitude],
+                "drone4_start": [ 3.0, -1.5 + lateral_offset, altitude],
+                "drone2_goal":  [-3.0, -1.5 + lateral_offset, altitude],
+                "drone4_goal":  [-3.0,  1.5 + lateral_offset, altitude],
             }
         if geometry == "four_v_four":
             jitter = rng.uniform(-0.15, 0.15)
             blue_y = [-1.5, -0.5, 0.5, 1.5]
             red_y = [-1.5, -0.5, 0.5, 1.5]  # 红方初始 y 排布
             targets = {}
-            for i, by in enumerate(blue_y, start=1):
-                targets[f"drone{i}_start"] = [-3.0, by + jitter, altitude]
-                targets[f"drone{i}_goal"] = [3.0, by + jitter, altitude]
-            for i, ry in enumerate(red_y, start=5):
-                targets[f"drone{i}_start"] = [3.0, ry + jitter, altitude]
-                targets[f"drone{i}_goal"] = [-3.0, ry + jitter, altitude]
+            for did, by in zip((1, 3, 5, 7), blue_y):
+                targets[f"drone{did}_start"] = [-3.0, by + jitter, altitude]
+                targets[f"drone{did}_goal"] = [3.0, by + jitter, altitude]
+            for did, ry in zip((2, 4, 6, 8), red_y):
+                targets[f"drone{did}_start"] = [3.0, ry + jitter, altitude]
+                targets[f"drone{did}_goal"] = [-3.0, ry + jitter, altitude]
             return targets
         raise ValueError(f"unsupported scenario: {self.name}")
 
     def is_separated(self, snapshot: dict[int, dict[str, Any]]) -> bool:
-        p1 = snapshot.get(1, {}).get("position")
-        p2 = snapshot.get(2, {}).get("position")
-        if p1 is None or p2 is None:
-            return False
         geometry = self._geometry()
+        if geometry in {"head_on_crossing", "perpendicular_crossing", "diagonal_crossing"}:
+            p1 = snapshot.get(1, {}).get("position")
+            p2 = snapshot.get(2, {}).get("position")
+            if p1 is None or p2 is None:
+                return False
         if geometry == "head_on_crossing":
             return p1[0] < -2.0 and p2[0] > 2.0
         if geometry == "perpendicular_crossing":
@@ -226,11 +228,12 @@ class Scenario:
         raise ValueError(f"unsupported scenario: {self.name}")
 
     def is_complete(self, snapshot: dict[int, dict[str, Any]]) -> bool:
-        p1 = snapshot.get(1, {}).get("position")
-        p2 = snapshot.get(2, {}).get("position")
-        if p1 is None or p2 is None:
-            return False
         geometry = self._geometry()
+        if geometry in {"head_on_crossing", "perpendicular_crossing", "diagonal_crossing"}:
+            p1 = snapshot.get(1, {}).get("position")
+            p2 = snapshot.get(2, {}).get("position")
+            if p1 is None or p2 is None:
+                return False
         if geometry == "head_on_crossing":
             return p1[0] > 2.0 and p2[0] < -2.0
         if geometry == "perpendicular_crossing":
@@ -602,6 +605,7 @@ def build_services(
     log_dir: Path,
     packet_loss_rate: float = 0.0,
     packet_loss_seed: int = 0,
+    start_positions: dict[int, list[float]] | None = None,
 ) -> tuple[list[ManagedService], int]:
     python = sys.executable
     mqtt_port = 1883
@@ -629,15 +633,13 @@ def build_services(
             )
         )
     port_args = ["--port", str(mqtt_port)]
-    # 多机 mock_drone
+    # 多机 mock_drone（有起点时直接在起点出生，避免原点重合聚集）
     for did in scenario.all_ids():
-        services.append(
-            ManagedService(
-                f"drone{did}",
-                [python, "mock_drone.py", "--drone-id", str(did), *port_args, *scenario.drone_args()],
-                log_dir,
-            )
-        )
+        drone_cmd = [python, "mock_drone.py", "--drone-id", str(did), *port_args, *scenario.drone_args()]
+        if start_positions and did in start_positions:
+            position = start_positions[did]
+            drone_cmd += ["--start-position", f"{position[0]},{position[1]},{position[2]}"]
+        services.append(ManagedService(f"drone{did}", drone_cmd, log_dir))
     # marl_pilot（仅控制蓝方）
     pilot_cmd = [python, "marl_pilot.py", *port_args, *scenario.pilot_args()]
     if scenario.blue_ids:
@@ -753,16 +755,17 @@ def run_trial(
     log_dir: Path,
     packet_loss_rate: float = 0.0,
 ) -> dict[str, Any]:
+    targets = scenario.targets_for_seed(seed)
     services, mqtt_port = build_services(
         condition,
         scenario,
         log_dir,
         packet_loss_rate=packet_loss_rate,
         packet_loss_seed=seed,
+        start_positions={did: targets[f"drone{did}_start"] for did in scenario.all_ids()},
     )
     monitor = Stage4Monitor("127.0.0.1", mqtt_port, qos=0,
                             expected_drones=scenario.drone_count)
-    targets = scenario.targets_for_seed(seed)
     replanner = C4Replanner(scenario, targets) if condition == "C4" else None
     red_controller = RedPursuitController(scenario, monitor) if scenario.red_pursuit else None
     try:
@@ -781,6 +784,10 @@ def run_trial(
             timeout=scenario.separation_timeout,
             label=f"{condition} seed={seed} initial separation",
         )
+        if separated:
+            # 多机从同一原点出生，分离前 min_distance 必然为 0；
+            # 只统计分离完成后的距离，碰撞判据才有意义。
+            monitor.reset_min_distance()
 
         cross_started_at = time.time()
         goal_commands = [
