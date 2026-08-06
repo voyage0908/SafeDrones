@@ -357,15 +357,16 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
 
 ### 背景与取舍
 
-截至本修订，阶段一~四已全部完成：MQTT 总线与 MockDrone、FastAPI 网关与 DeepSeek 接入、Unity 遥测可视化、以及 C2/C3/C4 消融 Benchmark（30 轮 × 3 场景，真实 DeepSeek Replanner，结果见 `docs/stage4/RESULTS.md`）。真机也已通过另一框架连通。
+截至本修订，阶段一~四已全部完成：MQTT 总线与 MockDrone、FastAPI 网关与 DeepSeek 接入、Unity 遥测可视化、以及 C2/C3/C4 消融 Benchmark（30 轮 × 3 场景，真实 DeepSeek Replanner，结果见 `docs/stage4/RESULTS.md`）。
+
+本阶段工作全部在仿真（MockDrone/Unity）中完成，不包含真机相关工作。
 
 ### 第一步：虚拟无人机前视相机与坐标反解（Sim 先行）
 
-目标：在 Unity 仿真中建立与真机一致的感知链路，完成像素坐标 → 场地物理坐标的反解，并用 ground truth 精确标定误差。
+目标：在 Unity 仿真中建立完整的感知链路，完成像素坐标 → 场地物理坐标的反解，并用 ground truth 精确标定误差。
 
 - 每架 Unity 虚拟无人机挂载前视 FPV 相机（默认下俯 15°，可配置），画面以 JPEG 帧经 MQTT 发出，相机内外参与位姿以低频元数据帧随路发布，位姿统一使用项目坐标系。
 - Python 侧完成检测与反解：地面目标用射线-地平面求交；空中无人机用已知机体尺寸单目测深；结果发布到 `swarm/target/{id}/position`、`swarm/drone_seen/{id}/position`。
-- topic schema 与真机阶段保持一致，真机落地时只替换视频源和标定参数，下游消费者不改。
 - 验收标准：
     - 地面目标反解与 ground truth 平面误差 < 0.2m（目标在画面中时）；
     - 空中无人机反解与其 telemetry 三维误差 < 0.5m；
@@ -379,7 +380,7 @@ LLM 的 System Prompt 中包含反馈解读指令，使其能在收到报告后�
     - **GT 模式**（已完成）：状态输入 = MockDrone telemetry ground truth；
     - **Ego 模式**：自身与友方位置可经通信共享；地面目标与敌方无人机位置必须来自机载相机反解，带像素噪声、估深误差与遮挡丢失。
 - 在同一套 runner、同一组场景、同一批随机种子上重跑 C2/C3/C4 消融，对比 GT vs Ego 两种输入下的碰撞率、近失率、接管次数与恢复时间。
-- 真机侧只做受控危险输入验证：越界航点拒绝、虚拟障碍避让、限速悬停，并记录 Sim-to-Real 差异。
+- 在真实相机链路接通前，可先用"带噪假感知"（ground truth 加噪声、随机丢失与延迟）做桩，提前验证 runner 并扫噪声容限。
 - 验收标准：
     - Ego 模式下 C3 在交叉场景中仍保持最小安全距离并完成任务；
     - GT vs Ego 的 C2/C3/C4 对比每条件不少于 10 个随机种子；
