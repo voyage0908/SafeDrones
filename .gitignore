@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -22,3 +23,30 @@ deepseek_api_key
 *.user
 *.pidb
 *.booproj
+tests/fixtures
+=======
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+logs/
+results/
+deepseek_api_key
+.vscode
+
+# Unity generated files
+**/Library/
+**/Temp/
+**/Obj/
+**/Build/
+**/Builds/
+**/Logs/
+**/UserSettings/
+*.csproj
+*.sln
+*.user
+*.pidb
+*.booproj
+>>>>>>> origin/feature/stereo-camera-group2
