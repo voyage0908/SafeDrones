@@ -24,6 +24,10 @@ namespace SwarmTelemetry
         [SerializeField] private bool useUnityYAsAltitude = true;
         [SerializeField] private int maxMessagesPerFrame = 64;
 
+        [Header("Camera")]
+        [SerializeField] private SwarmCamera.CameraFramePublisher cameraPublisher;
+        [SerializeField] private bool attachFpvCamera = true;
+
         private readonly object queueLock = new object();
         private readonly Queue<TelemetryEnvelope> pendingMessages = new Queue<TelemetryEnvelope>();
         private readonly Dictionary<int, DroneTelemetryView> drones = new Dictionary<int, DroneTelemetryView>();
@@ -234,6 +238,12 @@ namespace SwarmTelemetry
             drone.name = "Drone " + droneId;
             drone.SetBaseColor(FallbackColor(droneId));
             drones.Add(droneId, drone);
+
+            if (attachFpvCamera && cameraPublisher != null)
+            {
+                cameraPublisher.RegisterDrone(droneId, drone);
+            }
+
             return drone;
         }
 
