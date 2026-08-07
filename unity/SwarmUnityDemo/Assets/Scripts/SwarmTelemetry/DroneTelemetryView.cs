@@ -30,6 +30,12 @@ namespace SwarmTelemetry
             LastCommandId = "";
             cachedRenderer = GetComponentInChildren<Renderer>();
             safetyMode = "normal";
+
+            // Auto-add minimap icon if not present
+            if (GetComponentInChildren<MinimapDroneIcon>() == null)
+            {
+                gameObject.AddComponent<MinimapDroneIcon>();
+            }
         }
 
         public void ApplyTelemetry(
@@ -51,6 +57,9 @@ namespace SwarmTelemetry
         {
             normalColor = color;
             ApplyColor(color);
+            // Also color the minimap icon if present
+            var icon = GetComponentInChildren<MinimapDroneIcon>();
+            if (icon != null) icon.SetColor(color);
         }
 
         public void ApplySafetyState(string mode, float riskLevel)

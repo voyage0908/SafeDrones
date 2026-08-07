@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import time
 from typing import Any
 
 
@@ -84,6 +85,7 @@ class DroneCommand:
     target: Vector3 | None = None
     speed_mps: float | None = None
     command_id: str | None = None
+    priority: str = "normal"
 
 
 @dataclass
@@ -106,8 +108,17 @@ class MockDroneState:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def apply_command(self, command: DroneCommand) -> None:
+        # Safety commands always take priority over non-safety commands.
+        if command.priority != "safety" and self.extra.get("last_safety_command_at"):
+            hold_until = self.extra["last_safety_command_at"] + 1.5
+            if time.monotonic() < hold_until:
+                return
+
         self.last_error = None
         self.last_command_id = command.command_id
+
+        if command.priority == "safety":
+            self.extra["last_safety_command_at"] = time.monotonic()
 
         if command.speed_mps is not None:
             if command.speed_mps <= 0:
@@ -243,9 +254,11 @@ def parse_command(payload: bytes | str) -> DroneCommand:
     if command_id is not None and not isinstance(command_id, str):
         raise ValueError("command_id must be a string")
 
+    priority = str(raw.get("priority", "normal"))
     return DroneCommand(
         action=str(action),
         target=target,
         speed_mps=speed_mps,
         command_id=command_id,
+        priority=priority,
     )
