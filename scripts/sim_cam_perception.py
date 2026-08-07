@@ -36,6 +36,7 @@ from swarm.perception import (
     PerceptionConfig,
     SceneBounds,
     TrackRegistry,
+    Vector3,
     assign_slot_ids,
     distance,
     perceive_frame,
@@ -254,14 +255,25 @@ class SimCamPerceptionApp:
         self._refresh_friend_positions()
 
     def _refresh_friend_positions(self) -> None:
-        """根据 friend_ids 决定哪些 telemetry 坐标用于友方过滤。"""
+        """friend_ids 指定的坐标用于友方过滤；相机自身按 drone 另行排除。"""
         positions = []
         for drone_id, payload in self.telemetry.items():
-            if not self.friend_ids or drone_id in self.friend_ids:
+            if drone_id in self.friend_ids:
                 position = as_position(payload)
                 if position is not None:
                     positions.append(position)
         self.friend_filter.set_positions(positions)
+
+    def _is_filtered(
+        self,
+        observation: Observation,
+        camera_drone: int,
+        self_position: Vector3 | None,
+    ) -> bool:
+        """排除相机自身（按 camera_drone 的 telemetry）与显式 friend_ids。"""
+        if self_position is not None and distance(observation.position, self_position) <= self.friend_filter.radius_m:
+            return True
+        return self.friend_filter.is_friend(observation.position)
 
     def _handle_frame(self, topic: str, payload: bytes) -> None:
         """处理一帧 JPEG：检测、过滤、去重、发布、可选落盘。"""
@@ -280,12 +292,13 @@ class SimCamPerceptionApp:
             LOGGER.warning("failed to decode JPEG frame from %s", topic)
             return
 
-        # 检测结果先做己方过滤，再进入全局去重。
+        # 检测结果先排除相机自身与显式友方，再进入全局去重。
         observations = perceive_frame(frame, meta, self.config)
+        self_position = as_position(self.telemetry.get(camera_drone, {}))
         filtered = [
             observation
             for observation in observations
-            if not self.friend_filter.is_friend(observation.position)
+            if not self._is_filtered(observation, camera_drone, self_position)
         ]
 
         now = time.monotonic()
@@ -431,7 +444,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-blob-area", type=float, default=20.0)
     parser.add_argument("--min-drone-altitude", type=float, default=0.2)
     parser.add_argument("--max-depth", type=float, default=20.0)
-    parser.add_argument("--friend-drone-ids", default="", help="Comma-separated friend IDs; empty means all telemetry.")
+    parser.add_argument("--friend-drone-ids", default="", help="Comma-separated friend IDs; empty means only the camera's own drone is excluded.")
     parser.add_argument("--friend-exclusion-radius", type=float, default=0.5)
     parser.add_argument("--match-radius", type=float, default=0.75)
     parser.add_argument("--min-publish-interval", type=float, default=0.2)

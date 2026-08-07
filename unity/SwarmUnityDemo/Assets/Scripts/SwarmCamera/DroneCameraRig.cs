@@ -12,7 +12,7 @@ namespace SwarmCamera
     {
         [Header("Camera Placement")]
         [SerializeField] private Vector3 localPosition = new Vector3(0f, 0f, 0.15f);
-        [SerializeField] [Range(-90f, 0f)] private float pitchDownDeg = 15f;
+        [SerializeField] [Range(-90f, 0f)] private float pitchDownDeg = 5f;
         [SerializeField] [Range(30f, 120f)] private float fovDeg = 70f;
         [SerializeField] private float nearClipPlane = 0.05f;
         [SerializeField] private float farClipPlane = 1000f;
@@ -83,19 +83,9 @@ namespace SwarmCamera
             droneIsMoving = Vector3.Distance(currentPos, lastDronePosition) > 0.001f;
             lastDronePosition = currentPos;
 
-            // When stationary and target is set, point cameras toward target
-            if (!droneIsMoving && lookAtTarget != null)
-            {
-                // Mono camera
-                if (fpvCamera != null)
-                    PointCameraAt(fpvCamera, lookAtTarget.position);
-
-                // Stereo cameras
-                if (leftCamera != null)
-                    PointCameraAt(leftCamera, lookAtTarget.position);
-                if (rightCamera != null)
-                    PointCameraAt(rightCamera, lookAtTarget.position);
-            }
+            // 相机始终跟随机体朝向（机头方向 × 固定俯仰角）。
+            // 不再支持静止时瞄准 lookAtTarget：当前设计只看空中目标，
+            // FPV 语义要求相机朝向与机头一致，否则 meta 位姿不可信。
         }
 
         private void OnDestroy()
