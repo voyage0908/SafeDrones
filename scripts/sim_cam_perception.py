@@ -452,6 +452,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stale-timeout", type=float, default=1.0)
     parser.add_argument("--scene-min", nargs=3, type=float, default=[-12.0, -12.0, 0.0])
     parser.add_argument("--scene-max", nargs=3, type=float, default=[12.0, 12.0, 5.0])
+    parser.add_argument(
+        "--max-elevation-deg",
+        type=float,
+        default=3.0,
+        help="Reject airborne blobs whose ray elevation exceeds this (sky fragments); 90 disables.",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument(
         "--no-ground-targets",
@@ -497,6 +503,7 @@ def main() -> None:
         max_depth_m=args.max_depth,
         scene_bounds=bounds,
         detect_ground_targets=not args.no_ground_targets,
+        max_elevation_deg=args.max_elevation_deg,
     )
     app = SimCamPerceptionApp(
         host=args.host,

@@ -592,6 +592,14 @@ class ManagedService:
             self.log_file.close()
 
 
+def _tcp_open(host: str, port: int, timeout_sec: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_sec):
+            return True
+    except OSError:
+        return False
+
+
 def wait_for_tcp(host: str, port: int, timeout_sec: float) -> None:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
@@ -611,6 +619,16 @@ def parse_conditions(raw: str) -> list[str]:
     return conditions
 
 
+def ego_ids(scenario: Scenario) -> tuple[str, str]:
+    """Ego 模式的 self/enemy id（逗号分隔）。有红方时 self=蓝方、enemy=红方；
+    两机场景 self={1}、enemy={2}。"""
+    if scenario.red_ids:
+        self_ids = ",".join(str(drone_id) for drone_id in scenario.all_blue_ids())
+        enemy_ids = ",".join(str(drone_id) for drone_id in scenario.red_ids)
+        return self_ids, enemy_ids
+    return "1", "2"
+
+
 def build_services(
     condition: str,
     scenario: Scenario,
@@ -619,12 +637,18 @@ def build_services(
     packet_loss_seed: int = 0,
     start_positions: dict[int, list[float]] | None = None,
     gate_mode: str = "network",
+    input_mode: str = "gt",
 ) -> tuple[list[ManagedService], int]:
     python = sys.executable
     mqtt_port = 1883
-    services = [
-        ManagedService("broker", [python, "scripts/dev_broker.py"], log_dir),
-    ]
+    services = []
+    external_broker = input_mode == "ego" and _tcp_open("127.0.0.1", 1883)
+    if not external_broker:
+        services.append(ManagedService("broker", [python, "scripts/dev_broker.py"], log_dir))
+    else:
+        # Ego 模式复用外部常驻 broker：Unity/感知进程的 MQTT 连接不能
+        # 随每轮 trial 的 broker 重启而断开。
+        print("[stage4-benchmark] input_mode=ego: reusing external broker on 127.0.0.1:1883")
     if packet_loss_rate > 0:
         mqtt_port = 1884
         services.append(
@@ -646,6 +670,25 @@ def build_services(
             )
         )
     port_args = ["--port", str(mqtt_port)]
+    ego_topic_args: list[str] = []
+    if input_mode == "ego":
+        self_ids, enemy_ids = ego_ids(scenario)
+        services.append(
+            ManagedService(
+                "ego_bridge",
+                [
+                    python,
+                    "scripts/ego_bridge.py",
+                    *port_args,
+                    "--self-ids",
+                    self_ids,
+                    "--enemy-ids",
+                    enemy_ids,
+                ],
+                log_dir,
+            )
+        )
+        ego_topic_args = ["--telemetry-topic", "swarm/ego/drone/+/telemetry"]
     # 多机 mock_drone（有起点时直接在起点出生，避免原点重合聚集）
     onboard = gate_mode == "onboard" and condition in {"C3", "C4"}
     for did in scenario.all_ids():
@@ -663,15 +706,19 @@ def build_services(
                         f"{peer_id}={log_dir / f'drone{peer_id}_trajectory.jsonl'}",
                     ]
         services.append(ManagedService(f"drone{did}", drone_cmd, log_dir))
-    # marl_pilot（仅控制蓝方）
-    pilot_cmd = [python, "marl_pilot.py", *port_args, *scenario.pilot_args()]
-    if scenario.blue_ids:
+    # marl_pilot（仅控制蓝方；ego 模式只控制 self_ids，敌方按脚本飞行）
+    pilot_cmd = [python, "marl_pilot.py", *port_args, *scenario.pilot_args(), *ego_topic_args]
+    if input_mode == "ego":
+        pilot_cmd += ["--drone-ids"] + self_ids.split(",")
+    elif scenario.blue_ids:
         pilot_cmd += ["--drone-ids"] + [str(d) for d in scenario.blue_ids]
     services.append(ManagedService("marl_pilot", pilot_cmd, log_dir))
-    # safety_gate（仅保护蓝方；onboard 模式下安全逻辑在各无人机进程内）
+    # safety_gate（仅保护蓝方/self；onboard 模式下安全逻辑在各无人机进程内）
     if condition in {"C3", "C4"} and gate_mode == "network":
-        gate_cmd = [python, "safety_gate.py", *port_args]
-        if scenario.blue_ids:
+        gate_cmd = [python, "safety_gate.py", *port_args, *ego_topic_args]
+        if input_mode == "ego":
+            gate_cmd += ["--protect-ids"] + self_ids.split(",")
+        elif scenario.blue_ids:
             gate_cmd += ["--protect-ids"] + [str(d) for d in scenario.blue_ids]
         services.append(ManagedService("safety_gate", gate_cmd, log_dir))
     return services, mqtt_port
@@ -679,10 +726,13 @@ def build_services(
 
 def start_services(services: list[ManagedService], mqtt_port: int) -> None:
     by_name = {service.name: service for service in services}
-    broker = by_name["broker"]
-    broker.start()
-    wait_for_tcp("127.0.0.1", 1883, timeout_sec=30)
-    broker.ensure_running()
+    broker = by_name.get("broker")
+    if broker is not None:
+        broker.start()
+        wait_for_tcp("127.0.0.1", 1883, timeout_sec=30)
+        broker.ensure_running()
+    else:
+        wait_for_tcp("127.0.0.1", 1883, timeout_sec=30)
 
     proxy = by_name.get("mqtt_proxy")
     if proxy is not None:
@@ -778,6 +828,7 @@ def run_trial(
     log_dir: Path,
     packet_loss_rate: float = 0.0,
     gate_mode: str = "network",
+    input_mode: str = "gt",
 ) -> dict[str, Any]:
     targets = scenario.targets_for_seed(seed)
     services, mqtt_port = build_services(
@@ -788,6 +839,7 @@ def run_trial(
         packet_loss_seed=seed,
         start_positions={did: targets[f"drone{did}_start"] for did in scenario.all_ids()},
         gate_mode=gate_mode,
+        input_mode=input_mode,
     )
     monitor = Stage4Monitor("127.0.0.1", mqtt_port, qos=0,
                             expected_drones=scenario.drone_count)
@@ -874,6 +926,7 @@ def run_trial(
             "crossing_duration_sec": round(crossing_duration_sec, 4),
             "packet_loss_rate": packet_loss_rate,
             "gate_mode": gate_mode,
+            "input_mode": input_mode,
             "final_positions": summary["final_positions"],
             "final_statuses": summary["final_statuses"],
             "log_dir": str(log_dir),
@@ -1017,6 +1070,13 @@ def main() -> None:
         default="network",
         help="Where the safety gate runs: network process (default) or onboard each drone.",
     )
+    parser.add_argument(
+        "--input-mode",
+        choices=["gt", "ego"],
+        default="gt",
+        help="State source for pilot/gate: gt = telemetry truth; ego = camera perception via ego_bridge "
+        "(requires Unity cameras and scripts/sim_cam_perception.py running).",
+    )
     args = parser.parse_args()
 
     if args.seeds <= 0:
@@ -1048,6 +1108,7 @@ def main() -> None:
                         trial_log_dir,
                         packet_loss_rate=args.packet_loss,
                         gate_mode=args.gate_mode,
+                        input_mode=args.input_mode,
                     )
                     results.append(result)
                     runs_file.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")

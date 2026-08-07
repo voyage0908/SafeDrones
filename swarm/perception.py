@@ -128,6 +128,9 @@ class PerceptionConfig:
     min_drone_altitude: float = 0.2
     max_depth_m: float = 20.0
     scene_bounds: SceneBounds = SceneBounds()
+    # 空中候选的仰角上限（度）：同高度飞行时，目标不可能出现在地平线以上。
+    # 天边的天空碎块仰角为正，会被该门限排除。设为 90 则不限制。
+    max_elevation_deg: float = 3.0
     # 是否启用"红色=地面目标"语义。关闭后红色并入空中候选，
     # 适用于没有地面目标、红蓝两队无人机互为敌方的设计。
     detect_ground_targets: bool = True
@@ -426,8 +429,12 @@ def perceive_frame(
     if not config.detect_ground_targets:
         airborne_ranges = AIRBORNE_HSV_RANGES + RED_HSV_RANGES
     airborne_blobs = detect_color_blobs(frame_bgr, airborne_ranges, config.min_blob_area)
+    max_ray_z = math.sin(math.radians(config.max_elevation_deg))
     for blob in airborne_blobs:
         ray = pixel_to_ray(blob.center[0], blob.center[1], intrinsics)
+        world_direction = world_ray(meta.cam_forward_xyz, meta.cam_up_xyz, ray)
+        if world_direction[2] > max_ray_z:
+            continue  # 仰角超过上限（天空碎块），不可能是同高度无人机
         object_depth = depth_from_apparent_size(
             blob.bbox_width,
             config.object_width_m,

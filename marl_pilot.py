@@ -89,6 +89,11 @@ def main() -> None:
         help="只控制这些 drone id，默认空=控制全部",
     )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--telemetry-topic",
+        default="swarm/drone/+/telemetry",
+        help="Telemetry topic to consume; point at swarm/ego/drone/+/telemetry for Ego mode.",
+    )
     args = parser.parse_args()
     pilot_drone_ids: set[int] | None = set(args.drone_ids) if args.drone_ids else None
 
@@ -129,7 +134,7 @@ def main() -> None:
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
         LOGGER.info("connected to MQTT broker %s:%s with result=%s", args.host, args.port, reason_code)
-        client.subscribe("swarm/drone/+/telemetry", qos=args.qos)
+        client.subscribe(args.telemetry_topic, qos=args.qos)
         client.subscribe("swarm/drone/+/command", qos=args.qos)
         client.subscribe("swarm/commander/status", qos=args.qos)
         client.subscribe("swarm/commander/override", qos=args.qos)

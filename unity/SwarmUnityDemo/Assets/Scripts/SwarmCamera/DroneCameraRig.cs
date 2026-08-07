@@ -11,7 +11,9 @@ namespace SwarmCamera
     public sealed class DroneCameraRig : MonoBehaviour
     {
         [Header("Camera Placement")]
-        [SerializeField] private Vector3 localPosition = new Vector3(0f, 0f, 0.15f);
+        // 相机必须位于机体前方且不看到自身外壳（胶囊半长 ~0.175m），
+        // 否则自体会出现在画面里并被感知端误检为其他无人机。
+        [SerializeField] private Vector3 localPosition = new Vector3(0f, 0.05f, 0.3f);
         [SerializeField] [Range(-90f, 0f)] private float pitchDownDeg = 5f;
         [SerializeField] [Range(30f, 120f)] private float fovDeg = 70f;
         [SerializeField] private float nearClipPlane = 0.05f;
