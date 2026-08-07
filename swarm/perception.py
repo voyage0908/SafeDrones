@@ -30,18 +30,19 @@ Vector3 = tuple[float, float, float]
 HsvRange = tuple[tuple[int, int, int], tuple[int, int, int]]
 
 # 地面目标明确为红色。红色在 OpenCV HSV 中跨越 0 度附近，因此拆成两段；
-# 范围有意放宽，允许实际渲染中存在一定色相、饱和度和亮度偏差。
+# 饱和度下限提高到 100，避免低饱和的天空/阴影被误检。
 RED_HSV_RANGES: tuple[HsvRange, ...] = (
-    ((0, 80, 60), (10, 255, 255)),
-    ((170, 80, 60), (180, 255, 255)),
+    ((0, 100, 60), (10, 255, 255)),
+    ((170, 100, 60), (180, 255, 255)),
 )
 
 # 空中目标颜色：文档 FallbackColor 中排除红色后的蓝/绿/黄。
-# 范围有意放宽，允许相近颜色和轻微光照/渲染色偏。
+# 饱和度下限 100：天空（S≈74）和地面阴影（S≈67）会被排除，
+# 机体纯色（S>150）即使在暗面也保留。
 AIRBORNE_HSV_RANGES: tuple[HsvRange, ...] = (
-    ((15, 60, 60), (40, 255, 255)),   # 黄
-    ((60, 60, 60), (90, 255, 255)),   # 绿
-    ((100, 60, 60), (130, 255, 255)), # 蓝
+    ((15, 100, 60), (40, 255, 255)),   # 黄
+    ((60, 100, 60), (90, 255, 255)),   # 绿
+    ((100, 100, 60), (130, 255, 255)), # 蓝
 )
 
 
@@ -127,6 +128,9 @@ class PerceptionConfig:
     min_drone_altitude: float = 0.2
     max_depth_m: float = 20.0
     scene_bounds: SceneBounds = SceneBounds()
+    # 是否启用"红色=地面目标"语义。关闭后红色并入空中候选，
+    # 适用于没有地面目标、红蓝两队无人机互为敌方的设计。
+    detect_ground_targets: bool = True
 
 
 @dataclass(frozen=True)
@@ -363,60 +367,65 @@ def perceive_frame(
     intrinsics = camera_intrinsics(meta.width, meta.height, meta.fov_deg)
     observations: list[Observation] = []
 
-    # 地面目标明确为红色。红色 blob 再通过地面交点与高度约束确认。
-    red_blobs = detect_color_blobs(frame_bgr, RED_HSV_RANGES, config.min_blob_area)
-    for blob in red_blobs:
-        ray = pixel_to_ray(blob.center[0], blob.center[1], intrinsics)
-        ground_point = ray_to_ground(
-            meta.cam_pos_xyz,
-            meta.cam_forward_xyz,
-            meta.cam_up_xyz,
-            ray,
-            config.ground_z,
-        )
-        object_depth = depth_from_apparent_size(
-            blob.bbox_width,
-            config.object_width_m,
-            intrinsics.fx,
-            config.depth_scale,
-            config.depth_offset_m,
-        )
-        if object_depth is None:
-            continue
-        object_position = position_from_pixel_depth(
-            meta.cam_pos_xyz,
-            meta.cam_forward_xyz,
-            meta.cam_up_xyz,
-            ray,
-            object_depth,
-        )
-        if object_position is None:
-            continue
-
-        # 红色代表地面目标候选；只有落在地面附近才输出为 target。
-        if (
-            ground_point is not None
-            and _inside_bounds(ground_point, config.scene_bounds)
-            and (
-                object_position[2] < config.min_drone_altitude
-                or abs(object_position[2] - config.ground_z) <= config.ground_tolerance_m
+    if config.detect_ground_targets:
+        # 地面目标明确为红色。红色 blob 再通过地面交点与高度约束确认。
+        red_blobs = detect_color_blobs(frame_bgr, RED_HSV_RANGES, config.min_blob_area)
+        for blob in red_blobs:
+            ray = pixel_to_ray(blob.center[0], blob.center[1], intrinsics)
+            ground_point = ray_to_ground(
+                meta.cam_pos_xyz,
+                meta.cam_forward_xyz,
+                meta.cam_up_xyz,
+                ray,
+                config.ground_z,
             )
-        ):
-            observations.append(
-                Observation(
-                    kind="target",
-                    position=ground_point,
-                    pixel=blob.center,
-                    camera_drone=meta.drone_id,
-                    timestamp_ms=meta.timestamp_ms,
-                    depth=object_depth,
-                    confidence=blob.area / (1.0 + object_depth),
-                    bbox_width=blob.bbox_width,
+            object_depth = depth_from_apparent_size(
+                blob.bbox_width,
+                config.object_width_m,
+                intrinsics.fx,
+                config.depth_scale,
+                config.depth_offset_m,
+            )
+            if object_depth is None:
+                continue
+            object_position = position_from_pixel_depth(
+                meta.cam_pos_xyz,
+                meta.cam_forward_xyz,
+                meta.cam_up_xyz,
+                ray,
+                object_depth,
+            )
+            if object_position is None:
+                continue
+
+            # 红色代表地面目标候选；只有落在地面附近才输出为 target。
+            if (
+                ground_point is not None
+                and _inside_bounds(ground_point, config.scene_bounds)
+                and (
+                    object_position[2] < config.min_drone_altitude
+                    or abs(object_position[2] - config.ground_z) <= config.ground_tolerance_m
                 )
-            )
+            ):
+                observations.append(
+                    Observation(
+                        kind="target",
+                        position=ground_point,
+                        pixel=blob.center,
+                        camera_drone=meta.drone_id,
+                        timestamp_ms=meta.timestamp_ms,
+                        depth=object_depth,
+                        confidence=blob.area / (1.0 + object_depth),
+                        bbox_width=blob.bbox_width,
+                    )
+                )
 
-    # 空中目标颜色限定为蓝/绿/黄，因此直接使用这些 HSV 范围检测。
-    airborne_blobs = detect_color_blobs(frame_bgr, AIRBORNE_HSV_RANGES, config.min_blob_area)
+    # 空中目标：默认限定蓝/绿/黄；关闭地面目标语义后红色并入空中候选
+    # （红蓝两队无人机互为敌方的设计）。
+    airborne_ranges = AIRBORNE_HSV_RANGES
+    if not config.detect_ground_targets:
+        airborne_ranges = AIRBORNE_HSV_RANGES + RED_HSV_RANGES
+    airborne_blobs = detect_color_blobs(frame_bgr, airborne_ranges, config.min_blob_area)
     for blob in airborne_blobs:
         ray = pixel_to_ray(blob.center[0], blob.center[1], intrinsics)
         object_depth = depth_from_apparent_size(

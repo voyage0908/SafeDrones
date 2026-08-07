@@ -189,6 +189,7 @@ class SimCamPerceptionApp:
         """连接成功后订阅 Group 1 输入 topic 与遥测 topic。"""
         LOGGER.info("connected to MQTT broker %s:%s with result=%s", self.host, self.port, reason_code)
         client.subscribe("swarm/cam/drone/+/frame", qos=self.qos)
+        client.subscribe("swarm/cam/drone/+/left/frame", qos=self.qos)
         client.subscribe("swarm/cam/drone/+/meta", qos=self.qos)
         client.subscribe("swarm/target/+/groundtruth", qos=self.qos)
         client.subscribe("swarm/drone/+/telemetry", qos=self.qos)
@@ -439,6 +440,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene-min", nargs=3, type=float, default=[-12.0, -12.0, 0.0])
     parser.add_argument("--scene-max", nargs=3, type=float, default=[12.0, 12.0, 5.0])
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--no-ground-targets",
+        action="store_true",
+        help="Disable the red-means-ground-target rule; red blobs become airborne candidates.",
+    )
     return parser.parse_args()
 
 
@@ -477,6 +483,7 @@ def main() -> None:
         min_drone_altitude=args.min_drone_altitude,
         max_depth_m=args.max_depth,
         scene_bounds=bounds,
+        detect_ground_targets=not args.no_ground_targets,
     )
     app = SimCamPerceptionApp(
         host=args.host,

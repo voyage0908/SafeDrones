@@ -54,8 +54,8 @@ namespace SwarmCamera
             // 1. Create or find ground plane (20x20m, gray)
             CreateOrReusePlane("GroundPlane", 20f, Color.gray);
 
-            // 2. Create or find target capsule (red, 0.3m diameter, on ground)
-            CreateOrReuseTarget("TargetTerrorist", Color.red, 0.3f);
+            // 2. 当前设计只分析无人机间碰撞，没有地面目标；
+            //    不再创建 TargetTerrorist（红色会干扰红方无人机检测）。
 
             // 3. Create or find SwarmCameraManager with CameraFramePublisher
             CreateOrReuseCameraManager("SwarmCameraManager");
