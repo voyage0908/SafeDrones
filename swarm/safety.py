@@ -12,6 +12,10 @@ def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
 def _sub(a: Vector3, b: Vector3) -> Vector3:
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
@@ -56,6 +60,8 @@ class SafetyConfig:
     release_threshold: float = 0.25
     hold_sec: float = 1.0
     min_override_sec: float = 0.0
+    # 垂直避障增益：0 表示纯水平避障，>0 时按无人机奇偶性加入垂直分量。
+    vertical_escape_gain: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -162,12 +168,22 @@ def safety_diversion_waypoint(snapshot: DroneSnapshot, pair: PairRisk, config: S
 
     away_dir = _normalize(horizontal_away)
     lateral_dir = _normalize((-away_dir[1], away_dir[0], 0.0))
-    safety_dir = _normalize(_add(_scale(away_dir, 0.45), _scale(lateral_dir, 0.90)))
+    horizontal_dir = _normalize(_add(_scale(away_dir, 0.45), _scale(lateral_dir, 0.90)))
+
+    # 垂直避障：pair 内 ID 较小的向上、较大的向下，保证任意相遇对
+    # 都能形成垂直分离，不依赖预先约定的高度层或奇偶性。
+    vertical_sign = 1.0 if snapshot.drone_id < pair.target_drone else -1.0
+    vertical_dir = (0.0, 0.0, vertical_sign * config.vertical_escape_gain)
+
+    safety_dir = _normalize(_add(horizontal_dir, vertical_dir))
     if _norm(safety_dir) == 0:
         safety_dir = away_dir
 
     escape_distance = max(config.escape_distance_m, config.safe_distance_m * 0.75)
-    return _add(snapshot.position, _scale(safety_dir, escape_distance))
+    waypoint = _add(snapshot.position, _scale(safety_dir, escape_distance))
+    # 限制垂直避障后的高度在安全区间内，避免多次接管累积触地或过高。
+    waypoint = (waypoint[0], waypoint[1], _clamp(waypoint[2], 0.5, 2.0))
+    return waypoint
 
 
 class SafetyGate:

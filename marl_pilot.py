@@ -15,7 +15,7 @@ from swarm.marl import (
     action_to_waypoint,
 )
 from swarm.safety import DroneSnapshot
-from swarm.simulation import Vector3
+from swarm.simulation import Vector3, norm, subtract
 
 
 LOGGER = logging.getLogger("marl_pilot")
@@ -199,7 +199,14 @@ def main() -> None:
                 else:
                     action = pilot.predict(snapshot, snapshot_list, target=target)
 
-                waypoint = action_to_waypoint(snapshot.position, action, action_config)
+                # 接近目标时直接发送真实目标点，避免 "位置+速度×horizon" 前馈
+                # 导致的冲超-回摆振荡。阈值固定为 0.3m，与 goal-arrival 判据一致，
+                # 避免在大速度场景下过早直线冲向目标。
+                goal_distance = norm(subtract(target, snapshot.position))
+                if goal_distance <= 0.3:
+                    waypoint = target
+                else:
+                    waypoint = action_to_waypoint(snapshot.position, action, action_config)
                 command = build_micro_waypoint_command(snapshot.drone_id, waypoint, timestamp_ms)
                 client.publish(
                     f"swarm/drone/{snapshot.drone_id}/command",

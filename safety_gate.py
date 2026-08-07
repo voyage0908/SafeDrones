@@ -47,6 +47,8 @@ def main() -> None:
     parser.add_argument("--hold-sec", type=float, default=1.0)
     parser.add_argument("--min-override-sec", type=float, default=0.0,
                         help="Override 触发后至少持续该秒数，即使风险下降或目标丢失也不提前释放。")
+    parser.add_argument("--vertical-escape-gain", type=float, default=0.0,
+                        help="垂直避障增益：0=纯水平避障，>0 时按无人机奇偶性加入垂直分量。")
     parser.add_argument("--override-command-interval", type=float, default=0.5)
     parser.add_argument("--status-interval", type=float, default=1.0)
     parser.add_argument(
@@ -77,6 +79,7 @@ def main() -> None:
         high_threshold=args.high_threshold,
         hold_sec=args.hold_sec,
         min_override_sec=args.min_override_sec,
+        vertical_escape_gain=args.vertical_escape_gain,
     )
     gate = SafetyGate(config)
     snapshots: dict[int, DroneSnapshot] = {}

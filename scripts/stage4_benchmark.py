@@ -766,7 +766,23 @@ def build_services(
                     ]
         services.append(ManagedService(f"drone{did}", drone_cmd, log_dir))
     # marl_pilot（仅控制蓝方；ego 模式只控制 self_ids，敌方按脚本飞行）
-    pilot_cmd = [python, "marl_pilot.py", *port_args, *scenario.pilot_args(), *ego_topic_args]
+    pilot_args = scenario.pilot_args()
+    if condition == "C2":
+        # C2 基线要求完全无规则避障：统一覆盖场景默认的 avoidance 参数，
+        # 保留场景的速度/horizon 参数，确保 C2 vs C3/C4 对比公平。
+        filtered: list[str] = []
+        skip_next = False
+        for arg in pilot_args:
+            if arg in {"--rule-safe-distance", "--repulsion-gain"}:
+                skip_next = True
+                continue
+            if skip_next:
+                skip_next = False
+                continue
+            filtered.append(arg)
+        filtered += ["--rule-safe-distance", "0.01", "--repulsion-gain", "0.0"]
+        pilot_args = filtered
+    pilot_cmd = [python, "marl_pilot.py", *port_args, *pilot_args, *ego_topic_args]
     if input_mode == "ego":
         pilot_cmd += ["--drone-ids"] + self_ids.split(",")
     elif scenario.blue_ids:
@@ -790,7 +806,9 @@ def build_services(
                     "--safe-distance",
                     "3.0",
                     "--min-override-sec",
-                    "2.5",
+                    "1.5",
+                    "--vertical-escape-gain",
+                    "0.3",
                 ]
                 services.append(ManagedService(f"safety_gate_{camera_ns}", gate_cmd, log_dir))
         else:
