@@ -227,7 +227,31 @@ class Scenario:
             return True
         raise ValueError(f"unsupported scenario: {self.name}")
 
-    def is_complete(self, snapshot: dict[int, dict[str, Any]]) -> bool:
+    def is_complete(
+        self,
+        snapshot: dict[int, dict[str, Any]],
+        targets: dict[str, list[float]] | None = None,
+        arrival_radius_m: float = 0.3,
+    ) -> bool:
+        """任务完成判据。
+
+        优先使用 goal-arrival 判据：所有需要完成任务的无人机都到达目标点半径内。
+        - 有红方追击时只要求蓝方到达目标；红方是脚本追击，没有任务目标。
+        - 其他场景要求所有无人机到达各自目标。
+
+        若未提供 targets，回退到旧的位置互换判据，保持向后兼容。
+        """
+        if targets is not None:
+            check_ids = self.all_blue_ids() if self.red_pursuit else self.all_ids()
+            for did in check_ids:
+                goal = targets.get(f"drone{did}_goal")
+                pos = snapshot.get(did, {}).get("position")
+                if goal is None or pos is None:
+                    return False
+                if math.dist(pos, goal) > arrival_radius_m:
+                    return False
+            return True
+
         geometry = self._geometry()
         if geometry in {"head_on_crossing", "perpendicular_crossing", "diagonal_crossing"}:
             p1 = snapshot.get(1, {}).get("position")
@@ -852,6 +876,8 @@ def wait_for_crossing_completion(
     red_controller: "RedPursuitController | None" = None,
     republish_commands: list[dict[str, Any]] | None = None,
     republish_interval_sec: float = 2.0,
+    targets: dict[str, list[float]] | None = None,
+    arrival_radius_m: float = 0.3,
 ) -> bool:
     deadline = time.time() + timeout
     next_publish = 0.0
@@ -866,7 +892,11 @@ def wait_for_crossing_completion(
             replanner.process_new_overrides(monitor)
         if red_controller is not None:
             red_controller.tick()
-        if scenario.is_complete(monitor.snapshot()):
+        if scenario.is_complete(
+            monitor.snapshot(),
+            targets=targets,
+            arrival_radius_m=arrival_radius_m,
+        ):
             return True
         time.sleep(0.1)
 
@@ -934,6 +964,8 @@ def run_trial(
             replanner=replanner,
             red_controller=red_controller,
             republish_commands=goal_commands,
+            targets=targets,
+            arrival_radius_m=0.3,
         )
         if replanner is not None:
             replanner.process_new_overrides(monitor)
