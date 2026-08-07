@@ -45,6 +45,8 @@ def main() -> None:
     parser.add_argument("--high-threshold", type=float, default=0.70)
     parser.add_argument("--low-threshold", type=float, default=0.32)
     parser.add_argument("--hold-sec", type=float, default=1.0)
+    parser.add_argument("--min-override-sec", type=float, default=0.0,
+                        help="Override 触发后至少持续该秒数，即使风险下降或目标丢失也不提前释放。")
     parser.add_argument("--override-command-interval", type=float, default=0.5)
     parser.add_argument("--status-interval", type=float, default=1.0)
     parser.add_argument(
@@ -74,13 +76,15 @@ def main() -> None:
         low_threshold=args.low_threshold,
         high_threshold=args.high_threshold,
         hold_sec=args.hold_sec,
+        min_override_sec=args.min_override_sec,
     )
     gate = SafetyGate(config)
     snapshots: dict[int, DroneSnapshot] = {}
     active_overrides: set[int] = set()
     last_override_command_publish: dict[int, float] = {}
     last_status_publish = 0.0
-    client = build_mqtt_client(client_id="safety-gate")
+    gate_id = "-".join(str(d) for d in (protect_ids or ["all"]))
+    client = build_mqtt_client(client_id=f"safety-gate-{gate_id}")
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
         LOGGER.info("connected to MQTT broker %s:%s with result=%s", args.host, args.port, reason_code)

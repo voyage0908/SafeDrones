@@ -619,14 +619,23 @@ def parse_conditions(raw: str) -> list[str]:
     return conditions
 
 
+def _parse_comma_ids(raw: str) -> list[int]:
+    return [int(value.strip()) for value in raw.split(",") if value.strip()]
+
+
 def ego_ids(scenario: Scenario) -> tuple[str, str]:
-    """Ego 模式的 self/enemy id（逗号分隔）。有红方时 self=蓝方、enemy=红方；
-    两机场景 self={1}、enemy={2}。"""
+    """Ego 模式的 self/enemy id（逗号分隔）。
+
+    - 有红方时：self=蓝方、enemy=红方（不对称对抗场景）。
+    - 无红方时（head_on/perpendicular/diagonal 等两机对称场景）：
+      两架无人机都视为 self，也互为 enemy，使 Safety Gate 保护双方。
+    """
     if scenario.red_ids:
         self_ids = ",".join(str(drone_id) for drone_id in scenario.all_blue_ids())
         enemy_ids = ",".join(str(drone_id) for drone_id in scenario.red_ids)
         return self_ids, enemy_ids
-    return "1", "2"
+    all_ids = scenario.all_ids()
+    return ",".join(str(d) for d in all_ids), ",".join(str(d) for d in all_ids)
 
 
 def build_services(
@@ -673,9 +682,11 @@ def build_services(
     ego_topic_args: list[str] = []
     if input_mode == "ego":
         self_ids, enemy_ids = ego_ids(scenario)
+        # Pilot 使用合并 ego 流：所有 self 无人机的真值 telemetry +
+        # 非 self 敌方的相机估计（对称场景 enemy 与 self 重合，自动透传真值）。
         services.append(
             ManagedService(
-                "ego_bridge",
+                "ego_bridge_pilot",
                 [
                     python,
                     "scripts/ego_bridge.py",
@@ -689,6 +700,30 @@ def build_services(
             )
         )
         ego_topic_args = ["--telemetry-topic", "swarm/ego/drone/+/telemetry"]
+        # 每架 self 无人机各有一个 ego 视角：真值自身 + 自己摄像头估计的他人位置。
+        # 该视角供对应 Safety Gate 使用，实现"双方都知道自己的真实位置、
+        # 但只能通过摄像头推算对方位置"的 head_on 设定。
+        all_ids = scenario.all_ids()
+        for camera_id in _parse_comma_ids(self_ids):
+            other_ids = ",".join(str(did) for did in all_ids if did != camera_id)
+            camera_ns = f"camera{camera_id}"
+            services.append(
+                ManagedService(
+                    f"ego_bridge_{camera_ns}",
+                    [
+                        python,
+                        "scripts/ego_bridge.py",
+                        *port_args,
+                        "--self-ids",
+                        str(camera_id),
+                        "--enemy-ids",
+                        other_ids,
+                        "--namespace",
+                        camera_ns,
+                    ],
+                    log_dir,
+                )
+            )
     # 多机 mock_drone（有起点时直接在起点出生，避免原点重合聚集）
     onboard = gate_mode == "onboard" and condition in {"C3", "C4"}
     for did in scenario.all_ids():
@@ -715,12 +750,30 @@ def build_services(
     services.append(ManagedService("marl_pilot", pilot_cmd, log_dir))
     # safety_gate（仅保护蓝方/self；onboard 模式下安全逻辑在各无人机进程内）
     if condition in {"C3", "C4"} and gate_mode == "network":
-        gate_cmd = [python, "safety_gate.py", *port_args, *ego_topic_args]
         if input_mode == "ego":
-            gate_cmd += ["--protect-ids"] + self_ids.split(",")
-        elif scenario.blue_ids:
-            gate_cmd += ["--protect-ids"] + [str(d) for d in scenario.blue_ids]
-        services.append(ManagedService("safety_gate", gate_cmd, log_dir))
+            # Ego 模式下每架 self 无人机由独立的 Safety Gate 保护，
+            # 每个 Gate 只消费该无人机摄像头视角下的 ego telemetry。
+            for camera_id in _parse_comma_ids(self_ids):
+                camera_ns = f"camera{camera_id}"
+                gate_cmd = [
+                    python,
+                    "safety_gate.py",
+                    *port_args,
+                    "--telemetry-topic",
+                    f"swarm/ego/{camera_ns}/drone/+/telemetry",
+                    "--protect-ids",
+                    str(camera_id),
+                    "--safe-distance",
+                    "3.0",
+                    "--min-override-sec",
+                    "2.5",
+                ]
+                services.append(ManagedService(f"safety_gate_{camera_ns}", gate_cmd, log_dir))
+        else:
+            gate_cmd = [python, "safety_gate.py", *port_args, *ego_topic_args]
+            if scenario.blue_ids:
+                gate_cmd += ["--protect-ids"] + [str(d) for d in scenario.blue_ids]
+            services.append(ManagedService("safety_gate", gate_cmd, log_dir))
     return services, mqtt_port
 
 

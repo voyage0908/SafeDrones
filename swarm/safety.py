@@ -55,6 +55,7 @@ class SafetyConfig:
     high_threshold: float = 0.70
     release_threshold: float = 0.25
     hold_sec: float = 1.0
+    min_override_sec: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,7 @@ class SafetyGate:
     def __init__(self, config: SafetyConfig | None = None):
         self.config = config or SafetyConfig()
         self._override_until: dict[int, float] = {}
+        self._min_override_until: dict[int, float] = {}
 
     def evaluate(self, snapshots: list[DroneSnapshot], now: float | None = None) -> list[SafetyDecision]:
         now = time.monotonic() if now is None else now
@@ -216,12 +218,22 @@ class SafetyGate:
 
     def _mode(self, drone_id: int, risk: float, now: float) -> str:
         held_until = self._override_until.get(drone_id, 0.0)
+        min_held_until = self._min_override_until.get(drone_id, 0.0)
         if risk >= self.config.high_threshold:
             self._override_until[drone_id] = now + self.config.hold_sec
+            if drone_id not in self._min_override_until:
+                self._min_override_until[drone_id] = now + self.config.min_override_sec
             return "override"
 
         if now < held_until and risk >= self.config.release_threshold:
             return "override"
+
+        # 最短接管时间：即使风险已下降或目标丢失，也继续 override。
+        if now < min_held_until:
+            return "override"
+
+        self._override_until.pop(drone_id, None)
+        self._min_override_until.pop(drone_id, None)
 
         if risk >= self.config.low_threshold:
             return "warning"

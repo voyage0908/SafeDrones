@@ -126,8 +126,8 @@ class EgoBridge:
             return None
 
         camera_drone = int(payload.get("camera_drone") or 0)
-        if camera_drone in self.enemy_ids:
-            return None  # 目击不该来自敌方自身相机
+        if camera_drone not in self.self_ids:
+            return None  # 只接受友方/自身相机传来的目击
 
         # 两机场景天然只有一架敌方；多机时选"上次目击位置最近"的 track，
         # 否则选最久没有目击的 track。
@@ -148,17 +148,22 @@ class EgoBridge:
         self.tracks[best_id].update(position, timestamp_ms)
         return best_id
 
-    def outgoing_messages(self, timestamp_ms: int) -> list[tuple[str, dict[str, Any]]]:
+    def outgoing_messages(self, timestamp_ms: int, namespace: str = "") -> list[tuple[str, dict[str, Any]]]:
+        prefix = f"swarm/ego/{namespace}/drone" if namespace else "swarm/ego/drone"
         messages: list[tuple[str, dict[str, Any]]] = []
         for drone_id, payload in self.self_telemetry.items():
             merged = dict(payload)
             merged["timestamp_ms"] = timestamp_ms
             merged.setdefault("source", "telemetry")
-            messages.append((f"swarm/ego/drone/{drone_id}/telemetry", merged))
+            messages.append((f"{prefix}/{drone_id}/telemetry", merged))
         for enemy_id, track in self.tracks.items():
+            # 若敌方 ID 同时也是 self，直接透传的真值 telemetry 更可靠，
+            # 避免 self telemetry 与相机追踪往同一 topic 发冲突消息。
+            if enemy_id in self.self_ids:
+                continue
             telemetry = track.telemetry(enemy_id, timestamp_ms, self.ttl_ms)
             if telemetry is not None:
-                messages.append((f"swarm/ego/drone/{enemy_id}/telemetry", telemetry))
+                messages.append((f"{prefix}/{enemy_id}/telemetry", telemetry))
         return messages
 
 
@@ -169,6 +174,7 @@ def main() -> None:
     parser.add_argument("--qos", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--self-ids", default="1", help="Friendly drones whose telemetry passes through.")
     parser.add_argument("--enemy-ids", default="2", help="Enemy drones that must come from camera sightings.")
+    parser.add_argument("--namespace", default="", help="Ego namespace; empty=swarm/ego/drone/{id}/telemetry, else swarm/ego/{namespace}/drone/{id}/telemetry.")
     parser.add_argument("--state-ttl-sec", type=float, default=1.0)
     parser.add_argument("--publish-interval", type=float, default=0.1)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -186,7 +192,8 @@ def main() -> None:
         publish_interval_sec=args.publish_interval,
     )
 
-    client = build_mqtt_client(client_id="ego-bridge")
+    client_id = f"ego-bridge-{args.namespace}" if args.namespace else "ego-bridge"
+    client = build_mqtt_client(client_id=client_id)
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
         LOGGER.info("connected to MQTT broker %s:%s with result=%s", args.host, args.port, reason_code)
@@ -215,14 +222,16 @@ def main() -> None:
     client.connect(args.host, args.port, keepalive=30)
     client.loop_start()
 
+    prefix = f"swarm/ego/{args.namespace}/drone" if args.namespace else "swarm/ego/drone"
     LOGGER.info(
-        "ego bridge: self=%s enemy=%s -> swarm/ego/drone/*/telemetry",
+        "ego bridge: self=%s enemy=%s -> %s/*/telemetry",
         sorted(bridge.self_ids),
         sorted(bridge.enemy_ids),
+        prefix,
     )
     try:
         while True:
-            for topic, payload in bridge.outgoing_messages(now_ms()):
+            for topic, payload in bridge.outgoing_messages(now_ms(), namespace=args.namespace):
                 client.publish(topic, payload=json.dumps(payload, separators=(",", ":")), qos=args.qos)
             time.sleep(args.publish_interval)
     except KeyboardInterrupt:
