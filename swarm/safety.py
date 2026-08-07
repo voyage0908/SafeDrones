@@ -12,6 +12,10 @@ def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
 def _sub(a: Vector3, b: Vector3) -> Vector3:
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
@@ -55,6 +59,9 @@ class SafetyConfig:
     high_threshold: float = 0.70
     release_threshold: float = 0.25
     hold_sec: float = 1.0
+    min_override_sec: float = 0.0
+    # 垂直避障增益：0 表示纯水平避障，>0 时按无人机奇偶性加入垂直分量。
+    vertical_escape_gain: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -161,18 +168,29 @@ def safety_diversion_waypoint(snapshot: DroneSnapshot, pair: PairRisk, config: S
 
     away_dir = _normalize(horizontal_away)
     lateral_dir = _normalize((-away_dir[1], away_dir[0], 0.0))
-    safety_dir = _normalize(_add(_scale(away_dir, 0.45), _scale(lateral_dir, 0.90)))
+    horizontal_dir = _normalize(_add(_scale(away_dir, 0.45), _scale(lateral_dir, 0.90)))
+
+    # 垂直避障：pair 内 ID 较小的向上、较大的向下，保证任意相遇对
+    # 都能形成垂直分离，不依赖预先约定的高度层或奇偶性。
+    vertical_sign = 1.0 if snapshot.drone_id < pair.target_drone else -1.0
+    vertical_dir = (0.0, 0.0, vertical_sign * config.vertical_escape_gain)
+
+    safety_dir = _normalize(_add(horizontal_dir, vertical_dir))
     if _norm(safety_dir) == 0:
         safety_dir = away_dir
 
     escape_distance = max(config.escape_distance_m, config.safe_distance_m * 0.75)
-    return _add(snapshot.position, _scale(safety_dir, escape_distance))
+    waypoint = _add(snapshot.position, _scale(safety_dir, escape_distance))
+    # 限制垂直避障后的高度在安全区间内，避免多次接管累积触地或过高。
+    waypoint = (waypoint[0], waypoint[1], _clamp(waypoint[2], 0.5, 2.0))
+    return waypoint
 
 
 class SafetyGate:
     def __init__(self, config: SafetyConfig | None = None):
         self.config = config or SafetyConfig()
         self._override_until: dict[int, float] = {}
+        self._min_override_until: dict[int, float] = {}
 
     def evaluate(self, snapshots: list[DroneSnapshot], now: float | None = None) -> list[SafetyDecision]:
         now = time.monotonic() if now is None else now
@@ -185,7 +203,7 @@ class SafetyGate:
             reason = "collision_risk_exceeded" if mode == "override" else None
             safety_waypoint = (
                 safety_diversion_waypoint(snapshot, worst, self.config)
-                if mode == "override" and worst is not None
+                if mode in {"override", "warning"} and worst is not None
                 else None
             )
             decisions.append(
@@ -216,12 +234,22 @@ class SafetyGate:
 
     def _mode(self, drone_id: int, risk: float, now: float) -> str:
         held_until = self._override_until.get(drone_id, 0.0)
+        min_held_until = self._min_override_until.get(drone_id, 0.0)
         if risk >= self.config.high_threshold:
             self._override_until[drone_id] = now + self.config.hold_sec
+            if drone_id not in self._min_override_until:
+                self._min_override_until[drone_id] = now + self.config.min_override_sec
             return "override"
 
         if now < held_until and risk >= self.config.release_threshold:
             return "override"
+
+        # 最短接管时间：即使风险已下降或目标丢失，也继续 override。
+        if now < min_held_until:
+            return "override"
+
+        self._override_until.pop(drone_id, None)
+        self._min_override_until.pop(drone_id, None)
 
         if risk >= self.config.low_threshold:
             return "warning"

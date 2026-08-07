@@ -6,6 +6,7 @@ import csv
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -25,73 +26,284 @@ from swarm.llm_provider import CommanderLLM, LLMProviderError, WaypointPlan, loa
 
 
 SUPPORTED_CONDITIONS = {"C2", "C3", "C4"}
-SCENARIO_NAMES = ["head_on_crossing", "perpendicular_crossing", "diagonal_crossing"]
+SCENARIO_NAMES = [
+    "head_on_crossing",
+    "perpendicular_crossing",
+    "diagonal_crossing",
+    "llm_timeout",
+    "four_way_crossing",
+    "pursuit_intercept",
+    "formation_crossing",
+    "four_v_four",
+]
 
 
 @dataclass(frozen=True)
 class Scenario:
     name: str
+    drone_count: int = 2
+    blue_ids: tuple[int, ...] = ()
+    red_ids: tuple[int, ...] = ()
+    red_pursuit: bool = False
     separation_timeout: float = 12.0
     cross_timeout: float = 30.0
     near_miss_distance_m: float = 0.8
     collision_distance_m: float = 0.25
+    llm_delay_sec: float = 0.0
+
+    def all_blue_ids(self) -> tuple[int, ...]:
+        """蓝方 id 列表；未配置 team 时全部视为蓝方。"""
+        if self.blue_ids:
+            return self.blue_ids
+        return tuple(range(1, self.drone_count + 1))
+
+    def all_ids(self) -> tuple[int, ...]:
+        """所有无人机 id（蓝方在前，红方在后）。"""
+        blue = list(self.all_blue_ids())
+        red = [rid for rid in self.red_ids if rid not in blue]
+        return tuple(blue + red)
+
+    def __post_init__(self) -> None:
+        if self.name == "llm_timeout" and self.llm_delay_sec == 0.0:
+            object.__setattr__(self, "llm_delay_sec", 4.0)
+        if self.name == "four_way_crossing" and self.drone_count == 2:
+            object.__setattr__(self, "drone_count", 4)
+            object.__setattr__(self, "blue_ids", (1, 3, 5, 7))
+            object.__setattr__(self, "cross_timeout", 35.0)
+        if self.name == "pursuit_intercept" and self.drone_count == 2:
+            object.__setattr__(self, "drone_count", 4)
+            object.__setattr__(self, "blue_ids", (1, 3))
+            object.__setattr__(self, "red_ids", (2, 4))
+            object.__setattr__(self, "red_pursuit", True)
+            object.__setattr__(self, "cross_timeout", 40.0)
+        if self.name == "formation_crossing" and self.drone_count == 2:
+            object.__setattr__(self, "drone_count", 5)
+            object.__setattr__(self, "blue_ids", (1, 3, 5))
+            object.__setattr__(self, "red_ids", (2, 4))
+            object.__setattr__(self, "separation_timeout", 16.0)
+            object.__setattr__(self, "cross_timeout", 40.0)
+        if self.name == "four_v_four" and self.drone_count == 2:
+            object.__setattr__(self, "drone_count", 8)
+            object.__setattr__(self, "blue_ids", (1, 3, 5, 7))
+            object.__setattr__(self, "red_ids", (2, 4, 6, 8))
+            object.__setattr__(self, "red_pursuit", True)
+            object.__setattr__(self, "separation_timeout", 16.0)
+            object.__setattr__(self, "cross_timeout", 45.0)
+
+    def _geometry(self) -> str:
+        if self.name == "llm_timeout":
+            return "head_on_crossing"
+        return self.name
 
     def targets_for_seed(self, seed: int) -> dict[str, list[float]]:
         rng = random.Random(seed)
         lateral_offset = rng.uniform(-0.15, 0.15)
         z_offset = rng.uniform(-0.03, 0.03)
         altitude = 1.0 + z_offset
-        if self.name == "head_on_crossing":
+        geometry = self._geometry()
+        if geometry == "head_on_crossing":
             return {
                 "drone1_start": [-3.0, lateral_offset, altitude],
                 "drone2_start": [3.0, -lateral_offset, altitude],
                 "drone1_goal": [3.0, -lateral_offset, altitude],
                 "drone2_goal": [-3.0, lateral_offset, altitude],
             }
-        if self.name == "perpendicular_crossing":
+        if geometry == "perpendicular_crossing":
             return {
                 "drone1_start": [-3.0, lateral_offset, altitude],
                 "drone2_start": [lateral_offset, -3.0, altitude],
                 "drone1_goal": [3.0, -lateral_offset, altitude],
                 "drone2_goal": [-lateral_offset, 3.0, altitude],
             }
-        if self.name == "diagonal_crossing":
+        if geometry == "diagonal_crossing":
             return {
                 "drone1_start": [-3.0, -3.0 + lateral_offset, altitude],
                 "drone2_start": [-3.0, 3.0 - lateral_offset, altitude],
                 "drone1_goal": [3.0, 3.0 - lateral_offset, altitude],
                 "drone2_goal": [3.0, -3.0 + lateral_offset, altitude],
             }
+        if geometry == "four_way_crossing":
+            jitter = rng.uniform(-0.15, 0.15)
+            return {
+                "drone1_start": [-3.0, -3.0 + jitter, altitude],
+                "drone3_start": [-3.0,  3.0 - jitter, altitude],
+                "drone5_start": [ 3.0, -3.0 + jitter, altitude],
+                "drone7_start": [ 3.0,  3.0 - jitter, altitude],
+                "drone1_goal":  [ 3.0,  3.0 - jitter, altitude],
+                "drone3_goal":  [ 3.0, -3.0 + jitter, altitude],
+                "drone5_goal":  [-3.0,  3.0 - jitter, altitude],
+                "drone7_goal":  [-3.0, -3.0 + jitter, altitude],
+            }
+        if geometry == "pursuit_intercept":
+            return {
+                "drone1_start": [-3.0, -0.5 + lateral_offset, altitude],
+                "drone3_start": [-3.0,  0.5 + lateral_offset, altitude],
+                "drone1_goal":  [ 3.0, -0.5 + lateral_offset, altitude],
+                "drone3_goal":  [ 3.0,  0.5 + lateral_offset, altitude],
+                "drone2_start": [ 0.0,  3.0, altitude],
+                "drone4_start": [ 0.0, -3.0, altitude],
+                "drone2_goal":  [ 3.0, -0.5 + lateral_offset, altitude],
+                "drone4_goal":  [ 3.0,  0.5 + lateral_offset, altitude],
+            }
+        if geometry == "formation_crossing":
+            return {
+                "drone1_start": [-3.0,  0.0 + lateral_offset, altitude],
+                "drone3_start": [-3.0, -1.0 + lateral_offset, altitude],
+                "drone5_start": [-3.0,  1.0 + lateral_offset, altitude],
+                "drone1_goal":  [ 3.0,  0.0 + lateral_offset, altitude],
+                "drone3_goal":  [ 3.0, -1.0 + lateral_offset, altitude],
+                "drone5_goal":  [ 3.0,  1.0 + lateral_offset, altitude],
+                "drone2_start": [ 3.0,  1.5 + lateral_offset, altitude],
+                "drone4_start": [ 3.0, -1.5 + lateral_offset, altitude],
+                "drone2_goal":  [-3.0, -1.5 + lateral_offset, altitude],
+                "drone4_goal":  [-3.0,  1.5 + lateral_offset, altitude],
+            }
+        if geometry == "four_v_four":
+            jitter = rng.uniform(-0.15, 0.15)
+            blue_y = [-1.5, -0.5, 0.5, 1.5]
+            red_y = [-1.5, -0.5, 0.5, 1.5]  # 红方初始 y 排布
+            targets = {}
+            for did, by in zip((1, 3, 5, 7), blue_y):
+                targets[f"drone{did}_start"] = [-3.0, by + jitter, altitude]
+                targets[f"drone{did}_goal"] = [3.0, by + jitter, altitude]
+            for did, ry in zip((2, 4, 6, 8), red_y):
+                targets[f"drone{did}_start"] = [3.0, ry + jitter, altitude]
+                targets[f"drone{did}_goal"] = [-3.0, ry + jitter, altitude]
+            return targets
         raise ValueError(f"unsupported scenario: {self.name}")
 
     def is_separated(self, snapshot: dict[int, dict[str, Any]]) -> bool:
-        p1 = snapshot.get(1, {}).get("position")
-        p2 = snapshot.get(2, {}).get("position")
-        if p1 is None or p2 is None:
-            return False
-        if self.name == "head_on_crossing":
+        geometry = self._geometry()
+        if geometry in {"head_on_crossing", "perpendicular_crossing", "diagonal_crossing"}:
+            p1 = snapshot.get(1, {}).get("position")
+            p2 = snapshot.get(2, {}).get("position")
+            if p1 is None or p2 is None:
+                return False
+        if geometry == "head_on_crossing":
             return p1[0] < -2.0 and p2[0] > 2.0
-        if self.name == "perpendicular_crossing":
+        if geometry == "perpendicular_crossing":
             return p1[0] < -2.0 and p2[1] < -2.0
-        if self.name == "diagonal_crossing":
+        if geometry == "diagonal_crossing":
             return p1[0] < -2.0 and p1[1] < -2.0 and p2[0] < -2.0 and p2[1] > 2.0
+        if geometry == "four_way_crossing":
+            for did in (1, 3):
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] >= -2.0:
+                    return False
+            for did in (5, 7):
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] <= 2.0:
+                    return False
+            return True
+        if geometry == "pursuit_intercept":
+            for did in self.blue_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] >= -2.0:
+                    return False
+            for did in self.red_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is None:
+                    return False
+            return True
+        if geometry == "formation_crossing":
+            for did in self.blue_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] >= -2.0:
+                    return False
+            for did in self.red_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] <= 2.0:
+                    return False
+            return True
+        if geometry == "four_v_four":
+            for did in self.blue_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] >= -2.0:
+                    return False
+            for did in self.red_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] <= 2.0:
+                    return False
+            return True
         raise ValueError(f"unsupported scenario: {self.name}")
 
-    def is_complete(self, snapshot: dict[int, dict[str, Any]]) -> bool:
-        p1 = snapshot.get(1, {}).get("position")
-        p2 = snapshot.get(2, {}).get("position")
-        if p1 is None or p2 is None:
-            return False
-        if self.name == "head_on_crossing":
+    def is_complete(
+        self,
+        snapshot: dict[int, dict[str, Any]],
+        targets: dict[str, list[float]] | None = None,
+        arrival_radius_m: float = 0.3,
+    ) -> bool:
+        """任务完成判据。
+
+        优先使用 goal-arrival 判据：所有需要完成任务的无人机都到达目标点半径内。
+        - 有红方追击时只要求蓝方到达目标；红方是脚本追击，没有任务目标。
+        - 其他场景要求所有无人机到达各自目标。
+
+        若未提供 targets，回退到旧的位置互换判据，保持向后兼容。
+        """
+        if targets is not None:
+            check_ids = self.all_blue_ids() if self.red_pursuit else self.all_ids()
+            for did in check_ids:
+                goal = targets.get(f"drone{did}_goal")
+                pos = snapshot.get(did, {}).get("position")
+                if goal is None or pos is None:
+                    return False
+                if math.dist(pos, goal) > arrival_radius_m:
+                    return False
+            return True
+
+        geometry = self._geometry()
+        if geometry in {"head_on_crossing", "perpendicular_crossing", "diagonal_crossing"}:
+            p1 = snapshot.get(1, {}).get("position")
+            p2 = snapshot.get(2, {}).get("position")
+            if p1 is None or p2 is None:
+                return False
+        if geometry == "head_on_crossing":
             return p1[0] > 2.0 and p2[0] < -2.0
-        if self.name == "perpendicular_crossing":
+        if geometry == "perpendicular_crossing":
             return p1[0] > 2.0 and p2[1] > 2.0
-        if self.name == "diagonal_crossing":
+        if geometry == "diagonal_crossing":
             return p1[0] > 2.0 and p1[1] > 2.0 and p2[0] > 2.0 and p2[1] < -2.0
+        if geometry == "four_way_crossing":
+            for did in (1, 3):
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] <= 2.0:
+                    return False
+            for did in (5, 7):
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] >= -2.0:
+                    return False
+            return True
+        if geometry == "pursuit_intercept":
+            blue_reached = 0
+            for did in self.blue_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is not None and p[0] > 2.0:
+                    blue_reached += 1
+            return blue_reached >= 1
+        if geometry == "formation_crossing":
+            for did in self.blue_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] <= 2.0:
+                    return False
+            return True
+        if geometry == "four_v_four":
+            for did in self.blue_ids:
+                p = snapshot.get(did, {}).get("position")
+                if p is None or p[0] <= 2.0:
+                    return False
+            return True
         raise ValueError(f"unsupported scenario: {self.name}")
 
     def pilot_args(self) -> list[str]:
-        if self.name in {"perpendicular_crossing", "diagonal_crossing"}:
+        if self._geometry() in {"four_way_crossing", "pursuit_intercept", "formation_crossing", "four_v_four"}:
+            return [
+                "--rule-safe-distance", "0.5",
+                "--repulsion-gain", "1.0",
+                "--max-speed", "2.0",
+                "--horizon-sec", "0.5",
+            ]
+        if self._geometry() in {"perpendicular_crossing", "diagonal_crossing"}:
             return [
                 "--rule-safe-distance",
                 "0.01",
@@ -105,9 +317,60 @@ class Scenario:
         return []
 
     def drone_args(self) -> list[str]:
-        if self.name in {"perpendicular_crossing", "diagonal_crossing"}:
+        if self._geometry() in {"four_way_crossing", "pursuit_intercept", "formation_crossing", "four_v_four"}:
+            return ["--speed", "1.6", "--max-accel", "2.0"]
+        if self._geometry() in {"perpendicular_crossing", "diagonal_crossing"}:
             return ["--speed", "1.6", "--max-accel", "2.0"]
         return []
+
+
+@dataclass
+class RedPursuitController:
+    """红方追击控制器：定期对每架红方计算最近蓝方的拦截点并发布指令。"""
+
+    scenario: "Scenario"
+    monitor: "Stage4Monitor"
+    interval_sec: float = 2.0
+    lead_factor: float = 1.5
+
+    _last_tick: float = field(default=0.0, init=False)
+
+    def tick(self) -> None:
+        now = time.time()
+        if now - self._last_tick < self.interval_sec:
+            return
+        self._last_tick = now
+
+        snapshot = self.monitor.snapshot()
+        for red_id in self.scenario.red_ids:
+            target_blue = self._find_nearest_blue(red_id, snapshot)
+            if target_blue is None:
+                continue
+            blue_pos = snapshot[target_blue].get("position", [0, 0, 0])
+            blue_vel = snapshot[target_blue].get("velocity", [0, 0, 0])
+            intercept = [
+                blue_pos[i] + blue_vel[i] * self.lead_factor
+                for i in range(3)
+            ]
+            cmd = command(red_id, intercept, "red-pursuit")
+            cmd["priority"] = "red"
+            self.monitor.publish_command(cmd)
+
+    def _find_nearest_blue(
+        self, red_id: int, snapshot: dict[int, dict[str, Any]]
+    ) -> int | None:
+        red_pos = snapshot.get(red_id, {}).get("position")
+        if red_pos is None:
+            return None
+        best_blue, best_dist = None, float("inf")
+        for blue_id in self.scenario.blue_ids:
+            bp = snapshot.get(blue_id, {}).get("position")
+            if bp is None:
+                continue
+            d = math.dist(red_pos, bp)
+            if d < best_dist:
+                best_dist, best_blue = d, blue_id
+        return best_blue
 
 
 @dataclass
@@ -236,6 +499,8 @@ class C4Replanner:
         drone_id = int(event.get("drone") or 0)
         self.stats.llm_replan_attempts += 1
         prompt = build_c4_replan_text(self.scenario, self.targets, event, monitor.snapshot())
+        if self.scenario.llm_delay_sec > 0:
+            time.sleep(self.scenario.llm_delay_sec)
         started_at = time.perf_counter()
 
         plan: WaypointPlan | None = None
@@ -260,6 +525,7 @@ class C4Replanner:
                     "ok": False,
                     "latency_ms": round(latency_ms, 4),
                     "api_attempts": api_attempts,
+                    "injected_delay_sec": self.scenario.llm_delay_sec,
                     "error": str(last_error),
                 }
             )
@@ -283,6 +549,7 @@ class C4Replanner:
                 "ok": True,
                 "latency_ms": round(latency_ms, 4),
                 "api_attempts": api_attempts,
+                "injected_delay_sec": self.scenario.llm_delay_sec,
                 "waypoint": list(plan.waypoint),
                 "confidence": plan.confidence,
                 "rationale": plan.rationale,
@@ -349,6 +616,14 @@ class ManagedService:
             self.log_file.close()
 
 
+def _tcp_open(host: str, port: int, timeout_sec: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_sec):
+            return True
+    except OSError:
+        return False
+
+
 def wait_for_tcp(host: str, port: int, timeout_sec: float) -> None:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
@@ -368,34 +643,214 @@ def parse_conditions(raw: str) -> list[str]:
     return conditions
 
 
-def build_services(condition: str, scenario: Scenario, log_dir: Path) -> list[ManagedService]:
+def _parse_comma_ids(raw: str) -> list[int]:
+    return [int(value.strip()) for value in raw.split(",") if value.strip()]
+
+
+def ego_ids(scenario: Scenario) -> tuple[str, str]:
+    """Ego 模式的 self/enemy id（逗号分隔）。
+
+    - 有红方时：self=蓝方、enemy=红方（不对称对抗场景）。
+    - 无红方时（head_on/perpendicular/diagonal 等两机对称场景）：
+      两架无人机都视为 self，也互为 enemy，使 Safety Gate 保护双方。
+    """
+    if scenario.red_ids:
+        self_ids = ",".join(str(drone_id) for drone_id in scenario.all_blue_ids())
+        enemy_ids = ",".join(str(drone_id) for drone_id in scenario.red_ids)
+        return self_ids, enemy_ids
+    all_ids = scenario.all_ids()
+    return ",".join(str(d) for d in all_ids), ",".join(str(d) for d in all_ids)
+
+
+def build_services(
+    condition: str,
+    scenario: Scenario,
+    log_dir: Path,
+    packet_loss_rate: float = 0.0,
+    packet_loss_seed: int = 0,
+    start_positions: dict[int, list[float]] | None = None,
+    gate_mode: str = "network",
+    input_mode: str = "gt",
+) -> tuple[list[ManagedService], int]:
     python = sys.executable
-    services = [
-        ManagedService("broker", [python, "scripts/dev_broker.py"], log_dir),
-        ManagedService("drone1", [python, "mock_drone.py", "--drone-id", "1", *scenario.drone_args()], log_dir),
-        ManagedService("drone2", [python, "mock_drone.py", "--drone-id", "2", *scenario.drone_args()], log_dir),
-        ManagedService("marl_pilot", [python, "marl_pilot.py", *scenario.pilot_args()], log_dir),
+    mqtt_port = 1883
+    services = []
+    external_broker = input_mode == "ego" and _tcp_open("127.0.0.1", 1883)
+    if not external_broker:
+        services.append(ManagedService("broker", [python, "scripts/dev_broker.py"], log_dir))
+    else:
+        # Ego 模式复用外部常驻 broker：Unity/感知进程的 MQTT 连接不能
+        # 随每轮 trial 的 broker 重启而断开。
+        print("[stage4-benchmark] input_mode=ego: reusing external broker on 127.0.0.1:1883")
+    if packet_loss_rate > 0:
+        mqtt_port = 1884
+        services.append(
+            ManagedService(
+                "mqtt_proxy",
+                [
+                    python,
+                    "scripts/mqtt_lossy_proxy.py",
+                    "--listen-port",
+                    "1884",
+                    "--target-port",
+                    "1883",
+                    "--drop-rate",
+                    str(packet_loss_rate),
+                    "--seed",
+                    str(packet_loss_seed),
+                ],
+                log_dir,
+            )
+        )
+    port_args = ["--port", str(mqtt_port)]
+    ego_topic_args: list[str] = []
+    if input_mode == "ego":
+        self_ids, enemy_ids = ego_ids(scenario)
+        # Pilot 使用合并 ego 流：所有 self 无人机的真值 telemetry +
+        # 非 self 敌方的相机估计（对称场景 enemy 与 self 重合，自动透传真值）。
+        services.append(
+            ManagedService(
+                "ego_bridge_pilot",
+                [
+                    python,
+                    "scripts/ego_bridge.py",
+                    *port_args,
+                    "--self-ids",
+                    self_ids,
+                    "--enemy-ids",
+                    enemy_ids,
+                ],
+                log_dir,
+            )
+        )
+        ego_topic_args = ["--telemetry-topic", "swarm/ego/drone/+/telemetry"]
+        # 每架 self 无人机各有一个 ego 视角：真值自身 + 自己摄像头估计的他人位置。
+        # 该视角供对应 Safety Gate 使用，实现"双方都知道自己的真实位置、
+        # 但只能通过摄像头推算对方位置"的 head_on 设定。
+        all_ids = scenario.all_ids()
+        for camera_id in _parse_comma_ids(self_ids):
+            other_ids = ",".join(str(did) for did in all_ids if did != camera_id)
+            camera_ns = f"camera{camera_id}"
+            services.append(
+                ManagedService(
+                    f"ego_bridge_{camera_ns}",
+                    [
+                        python,
+                        "scripts/ego_bridge.py",
+                        *port_args,
+                        "--self-ids",
+                        str(camera_id),
+                        "--enemy-ids",
+                        other_ids,
+                        "--namespace",
+                        camera_ns,
+                    ],
+                    log_dir,
+                )
+            )
+    # 多机 mock_drone（有起点时直接在起点出生，避免原点重合聚集）
+    onboard = gate_mode == "onboard" and condition in {"C3", "C4"}
+    for did in scenario.all_ids():
+        drone_cmd = [python, "mock_drone.py", "--drone-id", str(did), *port_args, *scenario.drone_args()]
+        if start_positions and did in start_positions:
+            position = start_positions[did]
+            drone_cmd += ["--start-position", f"{position[0]},{position[1]},{position[2]}"]
+        drone_cmd += ["--log-trajectory", str(log_dir / f"drone{did}_trajectory.jsonl")]
+        if onboard:
+            drone_cmd += ["--onboard-gate"]
+            for peer_id in scenario.all_ids():
+                if peer_id != did:
+                    drone_cmd += [
+                        "--peer-trajectory",
+                        f"{peer_id}={log_dir / f'drone{peer_id}_trajectory.jsonl'}",
+                    ]
+        services.append(ManagedService(f"drone{did}", drone_cmd, log_dir))
+    # marl_pilot（仅控制蓝方；ego 模式只控制 self_ids，敌方按脚本飞行）
+    pilot_args = scenario.pilot_args()
+    if condition == "C2":
+        # C2 基线要求完全无规则避障：统一覆盖场景默认的 avoidance 参数，
+        # 保留场景的速度/horizon 参数，确保 C2 vs C3/C4 对比公平。
+        filtered: list[str] = []
+        skip_next = False
+        for arg in pilot_args:
+            if arg in {"--rule-safe-distance", "--repulsion-gain"}:
+                skip_next = True
+                continue
+            if skip_next:
+                skip_next = False
+                continue
+            filtered.append(arg)
+        filtered += ["--rule-safe-distance", "0.01", "--repulsion-gain", "0.0"]
+        pilot_args = filtered
+    pilot_cmd = [python, "marl_pilot.py", *port_args, *pilot_args, *ego_topic_args]
+    if input_mode == "ego":
+        pilot_cmd += ["--drone-ids"] + self_ids.split(",")
+    elif scenario.blue_ids:
+        pilot_cmd += ["--drone-ids"] + [str(d) for d in scenario.blue_ids]
+    services.append(ManagedService("marl_pilot", pilot_cmd, log_dir))
+    # safety_gate（仅保护蓝方/self；onboard 模式下安全逻辑在各无人机进程内）
+    if condition in {"C3", "C4"} and gate_mode == "network":
+        if input_mode == "ego":
+            # Ego 模式下每架 self 无人机由独立的 Safety Gate 保护，
+            # 每个 Gate 只消费该无人机摄像头视角下的 ego telemetry。
+            for camera_id in _parse_comma_ids(self_ids):
+                camera_ns = f"camera{camera_id}"
+                gate_cmd = [
+                    python,
+                    "safety_gate.py",
+                    *port_args,
+                    "--telemetry-topic",
+                    f"swarm/ego/{camera_ns}/drone/+/telemetry",
+                    "--protect-ids",
+                    str(camera_id),
+                    "--safe-distance",
+                    "3.0",
+                    "--min-override-sec",
+                    "1.5",
+                    "--vertical-escape-gain",
+                    "0.3",
+                ]
+                services.append(ManagedService(f"safety_gate_{camera_ns}", gate_cmd, log_dir))
+        else:
+            gate_cmd = [python, "safety_gate.py", *port_args, *ego_topic_args]
+            if scenario.blue_ids:
+                gate_cmd += ["--protect-ids"] + [str(d) for d in scenario.blue_ids]
+            services.append(ManagedService("safety_gate", gate_cmd, log_dir))
+    return services, mqtt_port
+
+
+def start_services(services: list[ManagedService], mqtt_port: int) -> None:
+    by_name = {service.name: service for service in services}
+    broker = by_name.get("broker")
+    if broker is not None:
+        broker.start()
+        wait_for_tcp("127.0.0.1", 1883, timeout_sec=30)
+        broker.ensure_running()
+    else:
+        wait_for_tcp("127.0.0.1", 1883, timeout_sec=30)
+
+    proxy = by_name.get("mqtt_proxy")
+    if proxy is not None:
+        proxy.start()
+        wait_for_tcp("127.0.0.1", mqtt_port, timeout_sec=30)
+        proxy.ensure_running()
+
+    drones = [service for service in services if service.name.startswith("drone")]
+    others = [
+        service
+        for service in services
+        if service not in drones and service.name not in {"broker", "mqtt_proxy"}
     ]
-    if condition in {"C3", "C4"}:
-        services.append(ManagedService("safety_gate", [python, "safety_gate.py"], log_dir))
-    return services
-
-
-def start_services(services: list[ManagedService]) -> None:
-    services[0].start()
-    wait_for_tcp("127.0.0.1", 1883, timeout_sec=30)
-    services[0].ensure_running()
-
-    for service in services[1:3]:
+    for service in drones:
         service.start()
     time.sleep(2)
-    for service in services[1:3]:
+    for service in drones:
         service.ensure_running()
 
-    for service in services[3:]:
+    for service in others:
         service.start()
     time.sleep(2)
-    for service in services[3:]:
+    for service in others:
         service.ensure_running()
 
 
@@ -405,18 +860,61 @@ def stop_services(services: list[ManagedService]) -> None:
     time.sleep(0.5)
 
 
+def wait_with_republish(
+    monitor: Stage4Monitor,
+    predicate: Any,
+    commands: list[dict[str, Any]],
+    timeout: float,
+    label: str,
+    republish_interval_sec: float = 2.0,
+) -> bool:
+    """Wait for predicate while republishing key commands so they survive packet loss."""
+    deadline = time.time() + timeout
+    next_publish = 0.0
+    while time.time() < deadline:
+        now = time.monotonic()
+        if now >= next_publish:
+            for payload in commands:
+                monitor.publish_command(payload)
+            next_publish = now + republish_interval_sec
+        if predicate():
+            return True
+        time.sleep(0.1)
+
+    print(f"[stage4-check] timed out waiting for {label}")
+    return False
+
+
 def wait_for_crossing_completion(
     condition: str,
     scenario: Scenario,
     monitor: Stage4Monitor,
     timeout: float,
     replanner: C4Replanner | None = None,
+    red_controller: "RedPursuitController | None" = None,
+    republish_commands: list[dict[str, Any]] | None = None,
+    republish_interval_sec: float = 2.0,
+    targets: dict[str, list[float]] | None = None,
+    arrival_radius_m: float = 0.3,
 ) -> bool:
     deadline = time.time() + timeout
+    next_publish = 0.0
     while time.time() < deadline:
+        if republish_commands:
+            now = time.monotonic()
+            if now >= next_publish:
+                for payload in republish_commands:
+                    monitor.publish_command(payload)
+                next_publish = now + republish_interval_sec
         if replanner is not None:
             replanner.process_new_overrides(monitor)
-        if scenario.is_complete(monitor.snapshot()):
+        if red_controller is not None:
+            red_controller.tick()
+        if scenario.is_complete(
+            monitor.snapshot(),
+            targets=targets,
+            arrival_radius_m=arrival_radius_m,
+        ):
             return True
         time.sleep(0.1)
 
@@ -424,28 +922,57 @@ def wait_for_crossing_completion(
     return False
 
 
-def run_trial(condition: str, scenario: Scenario, seed: int, log_dir: Path) -> dict[str, Any]:
-    services = build_services(condition, scenario, log_dir)
-    monitor = Stage4Monitor("127.0.0.1", 1883, qos=0)
+def run_trial(
+    condition: str,
+    scenario: Scenario,
+    seed: int,
+    log_dir: Path,
+    packet_loss_rate: float = 0.0,
+    gate_mode: str = "network",
+    input_mode: str = "gt",
+) -> dict[str, Any]:
     targets = scenario.targets_for_seed(seed)
+    services, mqtt_port = build_services(
+        condition,
+        scenario,
+        log_dir,
+        packet_loss_rate=packet_loss_rate,
+        packet_loss_seed=seed,
+        start_positions={did: targets[f"drone{did}_start"] for did in scenario.all_ids()},
+        gate_mode=gate_mode,
+        input_mode=input_mode,
+    )
+    monitor = Stage4Monitor("127.0.0.1", mqtt_port, qos=0,
+                            expected_drones=scenario.drone_count)
     replanner = C4Replanner(scenario, targets) if condition == "C4" else None
+    red_controller = RedPursuitController(scenario, monitor) if scenario.red_pursuit else None
     try:
-        start_services(services)
+        start_services(services, mqtt_port)
         monitor.start()
         monitor.wait_for_telemetry(timeout=8)
 
-        monitor.publish_command(command(1, targets["drone1_start"], "separate"))
-        monitor.publish_command(command(2, targets["drone2_start"], "separate"))
-        separated = monitor.wait_until(
+        start_commands = [
+            command(did, targets[f"drone{did}_start"], "separate")
+            for did in scenario.all_ids()
+        ]
+        separated = wait_with_republish(
+            monitor,
             lambda: scenario.is_separated(monitor.snapshot()),
+            start_commands,
             timeout=scenario.separation_timeout,
             label=f"{condition} seed={seed} initial separation",
         )
+        if separated:
+            # 多机从同一原点出生，分离前 min_distance 必然为 0；
+            # 只统计分离完成后的距离，碰撞判据才有意义。
+            monitor.reset_min_distance()
 
         cross_started_at = time.time()
-        if separated:
-            monitor.publish_command(command(1, targets["drone1_goal"], "cross"))
-            monitor.publish_command(command(2, targets["drone2_goal"], "cross"))
+        goal_commands = [
+            command(did, targets[f"drone{did}_goal"], "cross")
+            for did in scenario.all_ids()
+            if not (scenario.red_pursuit and did in scenario.red_ids)
+        ]
 
         swap_completed = separated and wait_for_crossing_completion(
             condition=condition,
@@ -453,6 +980,10 @@ def run_trial(condition: str, scenario: Scenario, seed: int, log_dir: Path) -> d
             monitor=monitor,
             timeout=scenario.cross_timeout,
             replanner=replanner,
+            red_controller=red_controller,
+            republish_commands=goal_commands,
+            targets=targets,
+            arrival_radius_m=0.3,
         )
         if replanner is not None:
             replanner.process_new_overrides(monitor)
@@ -496,6 +1027,9 @@ def run_trial(condition: str, scenario: Scenario, seed: int, log_dir: Path) -> d
             "llm_max_latency_ms": llm_stats.max_latency_ms,
             "llm_replan_events": llm_stats.llm_replan_events,
             "crossing_duration_sec": round(crossing_duration_sec, 4),
+            "packet_loss_rate": packet_loss_rate,
+            "gate_mode": gate_mode,
+            "input_mode": input_mode,
             "final_positions": summary["final_positions"],
             "final_statuses": summary["final_statuses"],
             "log_dir": str(log_dir),
@@ -528,6 +1062,7 @@ def write_summary_csv(path: Path, results: list[dict[str, Any]]) -> None:
         "llm_avg_latency_ms",
         "llm_max_latency_ms",
         "crossing_duration_sec",
+        "packet_loss_rate",
         "log_dir",
     ]
     with path.open("w", encoding="utf-8", newline="") as file:
@@ -626,10 +1161,31 @@ def main() -> None:
     parser.add_argument("--conditions", default="C2,C3")
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--out", default="results/stage4")
+    parser.add_argument(
+        "--packet-loss",
+        type=float,
+        default=0.0,
+        help="Fraction of MQTT PUBLISH packets to drop via the lossy proxy (0 disables it).",
+    )
+    parser.add_argument(
+        "--gate-mode",
+        choices=["network", "onboard"],
+        default="network",
+        help="Where the safety gate runs: network process (default) or onboard each drone.",
+    )
+    parser.add_argument(
+        "--input-mode",
+        choices=["gt", "ego"],
+        default="gt",
+        help="State source for pilot/gate: gt = telemetry truth; ego = camera perception via ego_bridge "
+        "(requires Unity cameras and scripts/sim_cam_perception.py running).",
+    )
     args = parser.parse_args()
 
     if args.seeds <= 0:
         raise SystemExit("--seeds must be positive")
+    if not 0.0 <= args.packet_loss <= 1.0:
+        raise SystemExit("--packet-loss must be between 0 and 1")
 
     conditions = parse_conditions(args.conditions)
     scenarios = [Scenario(name) for name in (SCENARIO_NAMES if args.scenario == "all" else [args.scenario])]
@@ -648,7 +1204,15 @@ def main() -> None:
                     trial_log_dir = logs_dir / scenario.name / f"{condition}_seed_{seed}"
                     trial_log_dir.mkdir(parents=True, exist_ok=True)
                     print(f"[stage4-benchmark] scenario={scenario.name} condition={condition} seed={seed}")
-                    result = run_trial(condition, scenario, seed, trial_log_dir)
+                    result = run_trial(
+                        condition,
+                        scenario,
+                        seed,
+                        trial_log_dir,
+                        packet_loss_rate=args.packet_loss,
+                        gate_mode=args.gate_mode,
+                        input_mode=args.input_mode,
+                    )
                     results.append(result)
                     runs_file.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
                     runs_file.flush()

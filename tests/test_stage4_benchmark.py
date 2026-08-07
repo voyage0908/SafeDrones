@@ -93,7 +93,12 @@ class Stage4BenchmarkScenarioTest(unittest.TestCase):
     def test_all_scenario_names_are_supported(self) -> None:
         for scenario_name in SCENARIO_NAMES:
             scenario = Scenario(scenario_name)
-            self.assertEqual(scenario.targets_for_seed(0)["drone1_start"][2], scenario.targets_for_seed(0)["drone2_start"][2])
+            targets = scenario.targets_for_seed(0)
+            all_ids = scenario.all_ids()
+            # 所有无人机起始高度一致
+            first_z = targets[f"drone{all_ids[0]}_start"][2]
+            for did in all_ids:
+                self.assertAlmostEqual(targets[f"drone{did}_start"][2], first_z)
 
     def test_write_aggregate_csv_groups_by_scenario_and_condition(self) -> None:
         results = [
@@ -171,6 +176,39 @@ class Stage4BenchmarkScenarioTest(unittest.TestCase):
 
         with self.assertRaises(LLMProviderError):
             validate_stage4_replan(WaypointPlan(drone=1, waypoint=(30.0, 0.0, 1.0)), expected_drone=1)
+
+
+class LlmTimeoutScenarioTest(unittest.TestCase):
+    def test_llm_timeout_is_registered_and_injects_delay(self) -> None:
+        self.assertIn("llm_timeout", SCENARIO_NAMES)
+        scenario = Scenario("llm_timeout")
+        self.assertEqual(scenario.llm_delay_sec, 4.0)
+
+    def test_llm_timeout_reuses_head_on_geometry(self) -> None:
+        timeout_scenario = Scenario("llm_timeout")
+        head_on_scenario = Scenario("head_on_crossing")
+        for seed in range(3):
+            self.assertEqual(
+                timeout_scenario.targets_for_seed(seed),
+                head_on_scenario.targets_for_seed(seed),
+            )
+
+        targets = timeout_scenario.targets_for_seed(0)
+        snapshot_start = {
+            1: {"position": targets["drone1_start"]},
+            2: {"position": targets["drone2_start"]},
+        }
+        snapshot_goal = {
+            1: {"position": targets["drone1_goal"]},
+            2: {"position": targets["drone2_goal"]},
+        }
+        self.assertTrue(timeout_scenario.is_separated(snapshot_start))
+        self.assertTrue(timeout_scenario.is_complete(snapshot_goal))
+
+    def test_explicit_delay_is_not_overwritten(self) -> None:
+        scenario = Scenario("llm_timeout", llm_delay_sec=2.5)
+        self.assertEqual(scenario.llm_delay_sec, 2.5)
+        self.assertEqual(Scenario("head_on_crossing").llm_delay_sec, 0.0)
 
 
 if __name__ == "__main__":

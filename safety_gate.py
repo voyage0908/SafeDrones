@@ -45,10 +45,27 @@ def main() -> None:
     parser.add_argument("--high-threshold", type=float, default=0.70)
     parser.add_argument("--low-threshold", type=float, default=0.32)
     parser.add_argument("--hold-sec", type=float, default=1.0)
+    parser.add_argument("--min-override-sec", type=float, default=0.0,
+                        help="Override 触发后至少持续该秒数，即使风险下降或目标丢失也不提前释放。")
+    parser.add_argument("--vertical-escape-gain", type=float, default=0.0,
+                        help="垂直避障增益：0=纯水平避障，>0 时按无人机奇偶性加入垂直分量。")
     parser.add_argument("--override-command-interval", type=float, default=0.5)
     parser.add_argument("--status-interval", type=float, default=1.0)
+    parser.add_argument(
+        "--protect-ids",
+        type=int,
+        nargs="*",
+        default=None,
+        help="只保护这些 drone id，默认空=保护全部",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--telemetry-topic",
+        default="swarm/drone/+/telemetry",
+        help="Telemetry topic to consume; point at swarm/ego/drone/+/telemetry for Ego mode.",
+    )
     args = parser.parse_args()
+    protect_ids: set[int] | None = set(args.protect_ids) if args.protect_ids else None
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -61,17 +78,20 @@ def main() -> None:
         low_threshold=args.low_threshold,
         high_threshold=args.high_threshold,
         hold_sec=args.hold_sec,
+        min_override_sec=args.min_override_sec,
+        vertical_escape_gain=args.vertical_escape_gain,
     )
     gate = SafetyGate(config)
     snapshots: dict[int, DroneSnapshot] = {}
     active_overrides: set[int] = set()
     last_override_command_publish: dict[int, float] = {}
     last_status_publish = 0.0
-    client = build_mqtt_client(client_id="safety-gate")
+    gate_id = "-".join(str(d) for d in (protect_ids or ["all"]))
+    client = build_mqtt_client(client_id=f"safety-gate-{gate_id}")
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
         LOGGER.info("connected to MQTT broker %s:%s with result=%s", args.host, args.port, reason_code)
-        client.subscribe("swarm/drone/+/telemetry", qos=args.qos)
+        client.subscribe(args.telemetry_topic, qos=args.qos)
 
     def on_message(client: Any, userdata: Any, message: Any) -> None:
         try:
@@ -102,6 +122,8 @@ def main() -> None:
                 last_status_publish = now
 
             for decision in decisions:
+                if protect_ids is not None and decision.drone not in protect_ids:
+                    continue
                 if decision.mode == "override":
                     first_override = decision.drone not in active_overrides
                     last_publish = last_override_command_publish.get(decision.drone, 0.0)

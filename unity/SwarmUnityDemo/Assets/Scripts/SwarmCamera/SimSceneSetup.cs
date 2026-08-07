@@ -51,11 +51,12 @@ namespace SwarmCamera
 
         private static void SetupSimulationSceneInternal()
         {
-            // 1. Create or find ground plane (20x20m, gray)
-            CreateOrReusePlane("GroundPlane", 20f, Color.gray);
+            // 1. Create or find ground plane (100x100m, gray)；边缘移出相机视野，
+            //    避免平面远端边线被误检为无人机。
+            CreateOrReusePlane("GroundPlane", 100f, Color.gray);
 
-            // 2. Create or find target capsule (red, 0.3m diameter, on ground)
-            CreateOrReuseTarget("TargetTerrorist", Color.red, 0.3f);
+            // 2. 当前设计只分析无人机间碰撞，没有地面目标；
+            //    不再创建 TargetTerrorist（红色会干扰红方无人机检测）。
 
             // 3. Create or find SwarmCameraManager with CameraFramePublisher
             CreateOrReuseCameraManager("SwarmCameraManager");
@@ -75,10 +76,19 @@ namespace SwarmCamera
 
         private static void CreateOrReusePlane(string name, float size, Color color)
         {
+            float scale = size / 10f;
             GameObject existing = GameObject.Find(name);
             if (existing != null)
             {
-                Debug.Log("[SimSceneSetup] Using existing " + name);
+                if (Mathf.Abs(existing.transform.localScale.x - scale) > 0.001f)
+                {
+                    existing.transform.localScale = new Vector3(scale, 1f, scale);
+                    Debug.Log("[SimSceneSetup] Resized " + name + " to " + size + "m");
+                }
+                else
+                {
+                    Debug.Log("[SimSceneSetup] Using existing " + name);
+                }
                 return;
             }
 
@@ -87,7 +97,6 @@ namespace SwarmCamera
             plane.transform.position = Vector3.zero;
 
             // Plane primitive is 10x10 units, scale to desired size
-            float scale = size / 10f;
             plane.transform.localScale = new Vector3(scale, 1f, scale);
 
             Renderer renderer = plane.GetComponent<Renderer>();

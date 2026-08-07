@@ -263,14 +263,12 @@ namespace SwarmTelemetry
 
         private static Color FallbackColor(int droneId)
         {
-            Color[] palette =
+            // 奇数为蓝方，偶数为红方
+            if (droneId % 2 == 1)
             {
-                new Color(0.1f, 0.45f, 0.95f),
-                new Color(0.95f, 0.2f, 0.16f),
-                new Color(0.13f, 0.62f, 0.35f),
-                new Color(0.95f, 0.72f, 0.18f)
-            };
-            return palette[Mathf.Abs(droneId - 1) % palette.Length];
+                return new Color(0.1f, 0.45f, 0.95f);
+            }
+            return new Color(0.95f, 0.2f, 0.16f);
         }
 
         private struct TelemetryEnvelope

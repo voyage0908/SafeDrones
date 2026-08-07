@@ -15,7 +15,7 @@ from swarm.marl import (
     action_to_waypoint,
 )
 from swarm.safety import DroneSnapshot
-from swarm.simulation import Vector3
+from swarm.simulation import Vector3, norm, subtract
 
 
 LOGGER = logging.getLogger("marl_pilot")
@@ -81,8 +81,21 @@ def main() -> None:
     parser.add_argument("--rule-safe-distance", type=float, default=1.6)
     parser.add_argument("--repulsion-gain", type=float, default=1.2)
     parser.add_argument("--override-hold-sec", type=float, default=1.5)
+    parser.add_argument(
+        "--drone-ids",
+        type=int,
+        nargs="*",
+        default=None,
+        help="只控制这些 drone id，默认空=控制全部",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--telemetry-topic",
+        default="swarm/drone/+/telemetry",
+        help="Telemetry topic to consume; point at swarm/ego/drone/+/telemetry for Ego mode.",
+    )
     args = parser.parse_args()
+    pilot_drone_ids: set[int] | None = set(args.drone_ids) if args.drone_ids else None
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -121,7 +134,7 @@ def main() -> None:
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
         LOGGER.info("connected to MQTT broker %s:%s with result=%s", args.host, args.port, reason_code)
-        client.subscribe("swarm/drone/+/telemetry", qos=args.qos)
+        client.subscribe(args.telemetry_topic, qos=args.qos)
         client.subscribe("swarm/drone/+/command", qos=args.qos)
         client.subscribe("swarm/commander/status", qos=args.qos)
         client.subscribe("swarm/commander/override", qos=args.qos)
@@ -171,6 +184,8 @@ def main() -> None:
             timestamp_ms = int(time.time_ns() // 1_000_000)
             snapshot_list = list(snapshots.values())
             for snapshot in snapshot_list:
+                if pilot_drone_ids is not None and snapshot.drone_id not in pilot_drone_ids:
+                    continue
                 if now < override_until.get(snapshot.drone_id, 0.0):
                     continue
 
@@ -184,7 +199,14 @@ def main() -> None:
                 else:
                     action = pilot.predict(snapshot, snapshot_list, target=target)
 
-                waypoint = action_to_waypoint(snapshot.position, action, action_config)
+                # 接近目标时直接发送真实目标点，避免 "位置+速度×horizon" 前馈
+                # 导致的冲超-回摆振荡。阈值固定为 0.3m，与 goal-arrival 判据一致，
+                # 避免在大速度场景下过早直线冲向目标。
+                goal_distance = norm(subtract(target, snapshot.position))
+                if goal_distance <= 0.3:
+                    waypoint = target
+                else:
+                    waypoint = action_to_waypoint(snapshot.position, action, action_config)
                 command = build_micro_waypoint_command(snapshot.drone_id, waypoint, timestamp_ms)
                 client.publish(
                     f"swarm/drone/{snapshot.drone_id}/command",

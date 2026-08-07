@@ -80,7 +80,7 @@ parse_args() {
         exit 2
         ;;
     esac
-  done
+    done
 
   validate_scenario "$SCENARIO"
   validate_seed "$SEED"
@@ -151,7 +151,7 @@ wait_for_tcp() {
       exit 1
     fi
     sleep 1
-  done
+    done
 }
 
 kill_tree() {
@@ -160,7 +160,7 @@ kill_tree() {
   children="$(pgrep -P "$pid" || true)"
   for child in $children; do
     kill_tree "$child"
-  done
+    done
   kill "$pid" >/dev/null 2>&1 || true
 }
 
@@ -171,18 +171,22 @@ cleanup() {
   CLEANED=1
 
   local pid
-  for pid in "${PIDS[@]}"; do
-    if kill -0 "$pid" >/dev/null 2>&1; then
-      kill_tree "$pid"
-    fi
-  done
+  if (( ${#PIDS[@]} > 0 )); then
+    for pid in "${PIDS[@]}"; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill_tree "$pid"
+      fi
+    done
+  fi
 
   sleep 1
-  for pid in "${PIDS[@]}"; do
-    if kill -0 "$pid" >/dev/null 2>&1; then
-      kill -9 "$pid" >/dev/null 2>&1 || true
-    fi
-  done
+  if (( ${#PIDS[@]} > 0 )); then
+    for pid in "${PIDS[@]}"; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
 }
 
 reset_stack_state() {
@@ -208,13 +212,12 @@ scenario_runtime_args() {
 
 start_base_stack() {
   local scenario="$1"
-  local drone_args=()
+  local drone_args; drone_args="$(scenario_runtime_args "$scenario" drone)"
 
   CURRENT_LOG_DIR="$LOG_ROOT/${scenario}_seed${SEED}"
   mkdir -p "$CURRENT_LOG_DIR"
   reset_stack_state
 
-  read -r -a drone_args <<<"$(scenario_runtime_args "$scenario" drone)"
 
   start_service broker python scripts/dev_broker.py
   local broker_pid
@@ -222,10 +225,10 @@ start_base_stack() {
   wait_for_tcp "127.0.0.1" "1883" "MQTT broker" 30
   ensure_running "broker" "$broker_pid" "$CURRENT_LOG_DIR/broker.log"
 
-  start_service drone1 python mock_drone.py --drone-id 1 "${drone_args[@]}"
+  start_service drone1 python mock_drone.py --drone-id 1 $drone_args
   local drone1_pid
   drone1_pid="$(last_pid)"
-  start_service drone2 python mock_drone.py --drone-id 2 "${drone_args[@]}"
+  start_service drone2 python mock_drone.py --drone-id 2 $drone_args
   local drone2_pid
   drone2_pid="$(last_pid)"
   sleep 2
@@ -235,11 +238,10 @@ start_base_stack() {
 
 start_control_stack() {
   local scenario="$1"
-  local pilot_args=()
+  local pilot_args; pilot_args="$(scenario_runtime_args "$scenario" pilot)"
 
-  read -r -a pilot_args <<<"$(scenario_runtime_args "$scenario" pilot)"
 
-  start_service marl_pilot python marl_pilot.py "${pilot_args[@]}"
+  start_service marl_pilot python marl_pilot.py $pilot_args
   local pilot_pid
   pilot_pid="$(last_pid)"
   start_service safety_gate python safety_gate.py

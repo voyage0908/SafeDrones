@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """
 无人机感知链路纯函数模块。
 
@@ -31,18 +30,19 @@ Vector3 = tuple[float, float, float]
 HsvRange = tuple[tuple[int, int, int], tuple[int, int, int]]
 
 # 地面目标明确为红色。红色在 OpenCV HSV 中跨越 0 度附近，因此拆成两段；
-# 范围有意放宽，允许实际渲染中存在一定色相、饱和度和亮度偏差。
+# 饱和度下限提高到 100，避免低饱和的天空/阴影被误检。
 RED_HSV_RANGES: tuple[HsvRange, ...] = (
-    ((0, 80, 60), (10, 255, 255)),
-    ((170, 80, 60), (180, 255, 255)),
+    ((0, 130, 60), (10, 255, 255)),
+    ((170, 130, 60), (180, 255, 255)),
 )
 
 # 空中目标颜色：文档 FallbackColor 中排除红色后的蓝/绿/黄。
-# 范围有意放宽，允许相近颜色和轻微光照/渲染色偏。
+# 饱和度下限 130：天空（S≈74）、地平线辉光（S≈105）和地面阴影（S≈67）
+# 都被排除，机体纯色（S>150）即使在暗面也保留。
 AIRBORNE_HSV_RANGES: tuple[HsvRange, ...] = (
-    ((15, 60, 60), (40, 255, 255)),   # 黄
-    ((60, 60, 60), (90, 255, 255)),   # 绿
-    ((100, 60, 60), (130, 255, 255)), # 蓝
+    ((15, 130, 60), (40, 255, 255)),   # 黄
+    ((60, 130, 60), (90, 255, 255)),   # 绿
+    ((100, 130, 60), (130, 255, 255)), # 蓝
 )
 
 
@@ -128,6 +128,12 @@ class PerceptionConfig:
     min_drone_altitude: float = 0.2
     max_depth_m: float = 20.0
     scene_bounds: SceneBounds = SceneBounds()
+    # 空中候选的仰角上限（度）：同高度飞行时，目标不可能出现在地平线以上。
+    # 天边的天空碎块仰角为正，会被该门限排除。设为 90 则不限制。
+    max_elevation_deg: float = 3.0
+    # 是否启用"红色=地面目标"语义。关闭后红色并入空中候选，
+    # 适用于没有地面目标、红蓝两队无人机互为敌方的设计。
+    detect_ground_targets: bool = True
 
 
 @dataclass(frozen=True)
@@ -364,62 +370,71 @@ def perceive_frame(
     intrinsics = camera_intrinsics(meta.width, meta.height, meta.fov_deg)
     observations: list[Observation] = []
 
-    # 地面目标明确为红色。红色 blob 再通过地面交点与高度约束确认。
-    red_blobs = detect_color_blobs(frame_bgr, RED_HSV_RANGES, config.min_blob_area)
-    for blob in red_blobs:
-        ray = pixel_to_ray(blob.center[0], blob.center[1], intrinsics)
-        ground_point = ray_to_ground(
-            meta.cam_pos_xyz,
-            meta.cam_forward_xyz,
-            meta.cam_up_xyz,
-            ray,
-            config.ground_z,
-        )
-        object_depth = depth_from_apparent_size(
-            blob.bbox_width,
-            config.object_width_m,
-            intrinsics.fx,
-            config.depth_scale,
-            config.depth_offset_m,
-        )
-        if object_depth is None:
-            continue
-        object_position = position_from_pixel_depth(
-            meta.cam_pos_xyz,
-            meta.cam_forward_xyz,
-            meta.cam_up_xyz,
-            ray,
-            object_depth,
-        )
-        if object_position is None:
-            continue
-
-        # 红色代表地面目标候选；只有落在地面附近才输出为 target。
-        if (
-            ground_point is not None
-            and _inside_bounds(ground_point, config.scene_bounds)
-            and (
-                object_position[2] < config.min_drone_altitude
-                or abs(object_position[2] - config.ground_z) <= config.ground_tolerance_m
+    if config.detect_ground_targets:
+        # 地面目标明确为红色。红色 blob 再通过地面交点与高度约束确认。
+        red_blobs = detect_color_blobs(frame_bgr, RED_HSV_RANGES, config.min_blob_area)
+        for blob in red_blobs:
+            ray = pixel_to_ray(blob.center[0], blob.center[1], intrinsics)
+            ground_point = ray_to_ground(
+                meta.cam_pos_xyz,
+                meta.cam_forward_xyz,
+                meta.cam_up_xyz,
+                ray,
+                config.ground_z,
             )
-        ):
-            observations.append(
-                Observation(
-                    kind="target",
-                    position=ground_point,
-                    pixel=blob.center,
-                    camera_drone=meta.drone_id,
-                    timestamp_ms=meta.timestamp_ms,
-                    depth=object_depth,
-                    confidence=blob.area / (1.0 + object_depth),
-                    bbox_width=blob.bbox_width,
+            object_depth = depth_from_apparent_size(
+                blob.bbox_width,
+                config.object_width_m,
+                intrinsics.fx,
+                config.depth_scale,
+                config.depth_offset_m,
+            )
+            if object_depth is None:
+                continue
+            object_position = position_from_pixel_depth(
+                meta.cam_pos_xyz,
+                meta.cam_forward_xyz,
+                meta.cam_up_xyz,
+                ray,
+                object_depth,
+            )
+            if object_position is None:
+                continue
+
+            # 红色代表地面目标候选；只有落在地面附近才输出为 target。
+            if (
+                ground_point is not None
+                and _inside_bounds(ground_point, config.scene_bounds)
+                and (
+                    object_position[2] < config.min_drone_altitude
+                    or abs(object_position[2] - config.ground_z) <= config.ground_tolerance_m
                 )
-            )
+            ):
+                observations.append(
+                    Observation(
+                        kind="target",
+                        position=ground_point,
+                        pixel=blob.center,
+                        camera_drone=meta.drone_id,
+                        timestamp_ms=meta.timestamp_ms,
+                        depth=object_depth,
+                        confidence=blob.area / (1.0 + object_depth),
+                        bbox_width=blob.bbox_width,
+                    )
+                )
 
-    # 空中目标颜色限定为蓝/绿/黄，因此直接使用这些 HSV 范围检测。
-    airborne_blobs = detect_color_blobs(frame_bgr, AIRBORNE_HSV_RANGES, config.min_blob_area)
+    # 空中目标：默认限定蓝/绿/黄；关闭地面目标语义后红色并入空中候选
+    # （红蓝两队无人机互为敌方的设计）。
+    airborne_ranges = AIRBORNE_HSV_RANGES
+    if not config.detect_ground_targets:
+        airborne_ranges = AIRBORNE_HSV_RANGES + RED_HSV_RANGES
+    airborne_blobs = detect_color_blobs(frame_bgr, airborne_ranges, config.min_blob_area)
+    max_ray_z = math.sin(math.radians(config.max_elevation_deg))
     for blob in airborne_blobs:
         ray = pixel_to_ray(blob.center[0], blob.center[1], intrinsics)
+        world_direction = world_ray(meta.cam_forward_xyz, meta.cam_up_xyz, ray)
+        if world_direction[2] > max_ray_z:
+            continue  # 仰角超过上限（天空碎块），不可能是同高度无人机
         object_depth = depth_from_apparent_size(
             blob.bbox_width,
             config.object_width_m,
@@ -596,145 +611,3 @@ class TrackRegistry:
 def assign_slot_ids(observations: Iterable[Observation]) -> list[tuple[int, Observation]]:
     """为当前去重结果分配临时输出 ID 1..N，不保证跨帧稳定。"""
     return [(index, observation) for index, observation in enumerate(observations, start=1)]
-=======
-from __future__ import annotations
-
-import math
-from typing import Any
-
-import cv2
-import numpy as np
-
-Intrinsics = tuple[float, float, float, float]
-Vector3 = tuple[float, float, float]
-
-
-def camera_intrinsics(width: int, height: int, fov_deg: float) -> Intrinsics:
-    if width <= 0 or height <= 0:
-        raise ValueError('image dimensions must be positive')
-    if not 0.0 < fov_deg < 180.0:
-        raise ValueError('fov_deg must be between 0 and 180')
-
-    fy = height / (2.0 * math.tan(math.radians(fov_deg) / 2.0))
-    return (fy, fy, width / 2.0, height / 2.0)
-
-
-def pixel_to_ray(u: float, v: float, intrinsics: Intrinsics) -> Vector3:
-    fx, fy, cx, cy = intrinsics
-    if fx <= 0.0 or fy <= 0.0:
-        raise ValueError('focal lengths must be positive')
-
-    ray = np.array(((u - cx) / fx, (cy - v) / fy, 1.0), dtype=float)
-    ray /= np.linalg.norm(ray)
-    return tuple(float(value) for value in ray)  # type: ignore[return-value]
-
-
-def ray_to_world(cam_forward: Any, cam_up: Any, ray: Any) -> Vector3:
-    '''Convert an x-right, y-up, z-forward camera ray to a world unit ray.'''
-    forward = _unit_vector(cam_forward, 'cam_forward')
-    up = np.array(cam_up, dtype=float, copy=True)
-    if up.shape != (3,) or not np.all(np.isfinite(up)):
-        raise ValueError('cam_up must contain three finite numbers')
-    up -= forward * np.dot(up, forward)
-    up = _unit_vector(up, 'cam_up')
-    right = np.cross(forward, up)
-
-    camera_ray = np.asarray(ray, dtype=float)
-    if camera_ray.shape != (3,) or not np.all(np.isfinite(camera_ray)):
-        raise ValueError('ray must contain three finite numbers')
-    world_ray = camera_ray[0] * right + camera_ray[1] * up + camera_ray[2] * forward
-    world_ray = _unit_vector(world_ray, 'ray')
-    return tuple(float(value) for value in world_ray)  # type: ignore[return-value]
-
-
-def ray_to_ground(
-    cam_pos: Any,
-    cam_forward: Any,
-    cam_up: Any,
-    ray: Any,
-    ground_z: float = 0.0,
-) -> Vector3 | None:
-    position = np.asarray(cam_pos, dtype=float)
-    if position.shape != (3,) or not np.all(np.isfinite(position)):
-        raise ValueError('cam_pos must contain three finite numbers')
-    if not math.isfinite(ground_z):
-        raise ValueError('ground_z must be finite')
-
-    world_ray = np.asarray(ray_to_world(cam_forward, cam_up, ray))
-    if world_ray[2] >= -1e-12:
-        return None
-
-    distance = (ground_z - position[2]) / world_ray[2]
-    if distance < 0.0:
-        return None
-    intersection = position + distance * world_ray
-    return tuple(float(value) for value in intersection)  # type: ignore[return-value]
-
-
-def depth_from_apparent_size(pixel_width: float, real_width_m: float, fx: float) -> float:
-    if not all(math.isfinite(value) and value > 0.0 for value in (pixel_width, real_width_m, fx)):
-        raise ValueError('pixel_width, real_width_m and fx must be positive finite values')
-    return fx * real_width_m / pixel_width
-
-
-def detect_color_blob(frame_bgr: np.ndarray, hsv_range: Any) -> tuple[tuple[int, int], int, float] | None:
-    if not isinstance(frame_bgr, np.ndarray) or frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3:
-        raise ValueError('frame_bgr must be an HxWx3 image')
-
-    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-    for lower, upper in _hsv_ranges(hsv_range):
-        mask = cv2.bitwise_or(mask, cv2.inRange(hsv, lower, upper))
-
-    kernel = np.ones((3, 3), dtype=np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = [contour for contour in contours if cv2.contourArea(contour) > 0.0]
-    if not contours:
-        return None
-
-    contour = max(contours, key=cv2.contourArea)
-    moments = cv2.moments(contour)
-    if moments['m00'] == 0.0:
-        return None
-    _, _, width, _ = cv2.boundingRect(contour)
-    centroid = (
-        int(round(moments['m10'] / moments['m00'])),
-        int(round(moments['m01'] / moments['m00'])),
-    )
-    return centroid, int(width), float(cv2.contourArea(contour))
-
-
-def _unit_vector(value: Any, name: str) -> np.ndarray:
-    vector = np.asarray(value, dtype=float)
-    if vector.shape != (3,) or not np.all(np.isfinite(vector)):
-        raise ValueError(f'{name} must contain three finite numbers')
-    length = float(np.linalg.norm(vector))
-    if length <= 1e-12:
-        raise ValueError(f'{name} must be non-zero')
-    return vector / length
-
-
-def _hsv_ranges(value: Any) -> list[tuple[np.ndarray, np.ndarray]]:
-    if len(value) == 2 and _is_hsv_triplet(value[0]) and _is_hsv_triplet(value[1]):
-        value = (value,)
-
-    ranges = []
-    for lower, upper in value:
-        lower_array = np.asarray(lower, dtype=np.uint8)
-        upper_array = np.asarray(upper, dtype=np.uint8)
-        if lower_array.shape != (3,) or upper_array.shape != (3,):
-            raise ValueError('each HSV range must contain lower and upper triplets')
-        ranges.append((lower_array, upper_array))
-    if not ranges:
-        raise ValueError('hsv_range must not be empty')
-    return ranges
-
-
-def _is_hsv_triplet(value: Any) -> bool:
-    try:
-        return len(value) == 3 and all(np.isscalar(component) for component in value)
-    except TypeError:
-        return False
->>>>>>> origin/feature/stereo-camera-group2

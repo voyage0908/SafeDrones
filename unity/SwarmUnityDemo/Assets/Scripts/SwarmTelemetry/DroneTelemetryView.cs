@@ -107,7 +107,13 @@ namespace SwarmTelemetry
             Vector3 delta = transform.position - previous;
             if (rotateTowardMotion && delta.sqrMagnitude > 0.000001f)
             {
-                transform.rotation = Quaternion.LookRotation(delta.normalized, Vector3.up);
+                // 只用水平分量决定朝向：垂直机动（如出生点瞬移）不应让机体俯仰，
+                // 否则机载相机的 meta 位姿会带上虚假的倾角。
+                Vector3 horizontalDelta = new Vector3(delta.x, 0.0f, delta.z);
+                if (horizontalDelta.sqrMagnitude > 0.000001f)
+                {
+                    transform.rotation = Quaternion.LookRotation(horizontalDelta.normalized, Vector3.up);
+                }
             }
         }
 
