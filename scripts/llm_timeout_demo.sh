@@ -17,7 +17,7 @@ usage() {
 Usage:
   bash scripts/llm_timeout_demo.sh [--seed 0-9] [--non-interactive]
 
-C4 condition with a 4-second LLM outage injected before every DeepSeek replan.
+C4 condition with a 4-second LLM outage injected before every AGH (Agnes) replan.
 Geometry and seed targets come from Scenario("llm_timeout") in scripts/stage4_benchmark.py
 (head_on crossing geometry, llm_delay_sec=4.0).
 

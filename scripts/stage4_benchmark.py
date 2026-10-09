@@ -593,25 +593,34 @@ class ManagedService:
 
     def stop(self) -> None:
         if self.process is not None and self.process.poll() is None:
-            try:
-                if hasattr(os, "killpg"):
+            if hasattr(os, "killpg"):
+                # POSIX: 先 SIGTERM 整组，超时再 SIGKILL
+                try:
                     os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-                else:
-                    self.process.terminate()
-                self.process.wait(timeout=5)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                if self.process.poll() is None:
+                    self.process.wait(timeout=5)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
                     try:
-                        if hasattr(os, "killpg"):
-                            os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                        else:
-                            self.process.kill()
+                        os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
                     except (ProcessLookupError, OSError):
                         pass
                     try:
                         self.process.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         pass
+            else:
+                # Windows: terminate() 只杀直接子进程、不杀子进程树，
+                # dev_broker 用 subprocess.run 拉起的 amqtt 会变孤儿累积 + 1883 端口残留污染下一轮。
+                # 必须用 taskkill /T 在父进程还活着时递归杀整棵树。
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(self.process.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
         if self.log_file is not None:
             self.log_file.close()
 
@@ -754,7 +763,7 @@ def build_services(
         drone_cmd = [python, "mock_drone.py", "--drone-id", str(did), *port_args, *scenario.drone_args()]
         if start_positions and did in start_positions:
             position = start_positions[did]
-            drone_cmd += ["--start-position", f"{position[0]},{position[1]},{position[2]}"]
+            drone_cmd += [f"--start-position={position[0]},{position[1]},{position[2]}"]
         drone_cmd += ["--log-trajectory", str(log_dir / f"drone{did}_trajectory.jsonl")]
         if onboard:
             drone_cmd += ["--onboard-gate"]

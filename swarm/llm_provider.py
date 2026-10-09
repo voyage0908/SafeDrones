@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import re
+import shutil
+import tempfile
 from typing import Any
 
-import httpx
-
-
-DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
+# 唯一模型后端 = AGH 智能体（Agnes 模型）。Python 侧不再直接调用任何 LLM API：
+# 这里通过 AGH CLI 的一次 one-shot 会话触发 Agnes 完成「自然语言 → JSON 航点」。
+# 比赛红线：Python 代码不得出现任何第三方模型名，所有模型调用只发生在 AGH 内部。
+DEFAULT_AGH_CLI = "C:/Users/Lenovo/Desktop/AI+黑马竞赛/agnes-harness/packages/cli/dist/local/agnes.mjs"
+DEFAULT_AGH_PROFILE = "local-dev"
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,9 @@ class LLMSettings:
     base_url: str
     model: str
     timeout_sec: float = 30.0
+    agh_cli: str = DEFAULT_AGH_CLI
+    agh_node: str = "node"
+    agh_profile: str = DEFAULT_AGH_PROFILE
 
 
 @dataclass(frozen=True)
@@ -36,26 +41,8 @@ class LLMProviderError(RuntimeError):
     pass
 
 
-def load_api_key(provider: str) -> str | None:
-    generic = os.getenv("LLM_API_KEY")
-    if generic:
-        return generic
-
-    if provider == "deepseek":
-        key = os.getenv("DEEPSEEK_API_KEY")
-        if key:
-            return key
-
-        key_file = Path(os.getenv("DEEPSEEK_API_KEY_FILE", "deepseek_api_key"))
-        if key_file.exists():
-            value = key_file.read_text(encoding="utf-8").strip()
-            return value or None
-
-    return None
-
-
 def load_llm_settings() -> LLMSettings:
-    provider = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
+    provider = os.getenv("LLM_PROVIDER", "agnes").strip().lower()
 
     if provider == "heuristic":
         return LLMSettings(
@@ -66,22 +53,16 @@ def load_llm_settings() -> LLMSettings:
             timeout_sec=float(os.getenv("LLM_TIMEOUT_SEC", "30")),
         )
 
-    if provider == "deepseek":
+    if provider in {"agnes", "agh"}:
         return LLMSettings(
-            provider=provider,
-            api_key=load_api_key(provider),
-            base_url=os.getenv("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL),
-            model=os.getenv("DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL),
-            timeout_sec=float(os.getenv("LLM_TIMEOUT_SEC", "30")),
-        )
-
-    if provider in {"openai_compatible", "compatible"}:
-        return LLMSettings(
-            provider="openai_compatible",
-            api_key=load_api_key(provider),
-            base_url=os.getenv("LLM_BASE_URL", "").strip(),
-            model=os.getenv("LLM_MODEL", "").strip(),
-            timeout_sec=float(os.getenv("LLM_TIMEOUT_SEC", "30")),
+            provider="agnes",
+            api_key=None,
+            base_url="",
+            model=os.getenv("AGNES_MODEL", "agnes"),
+            timeout_sec=float(os.getenv("LLM_TIMEOUT_SEC", "60")),
+            agh_cli=os.getenv("AGH_CLI", DEFAULT_AGH_CLI),
+            agh_node=os.getenv("AGH_NODE", "node"),
+            agh_profile=os.getenv("AGH_PROFILE", DEFAULT_AGH_PROFILE),
         )
 
     raise LLMProviderError(f"unsupported LLM_PROVIDER: {provider}")
@@ -162,55 +143,75 @@ class CommanderLLM:
     async def plan(self, text: str, drone: int = 1, context: list[dict[str, Any]] | None = None) -> WaypointPlan:
         if self.settings.provider == "heuristic":
             return heuristic_plan(text, drone)
+        if self.settings.provider == "agnes":
+            return await self._plan_via_agh(text, drone, context)
+        raise LLMProviderError(f"unsupported provider: {self.settings.provider}")
 
-        if not self.settings.api_key:
-            raise LLMProviderError(
-                f"missing API key for provider {self.settings.provider}; set DEEPSEEK_API_KEY, "
-                "DEEPSEEK_API_KEY_FILE, or LLM_API_KEY"
+    async def _plan_via_agh(
+        self,
+        text: str,
+        drone: int,
+        context: list[dict[str, Any]] | None,
+    ) -> WaypointPlan:
+        prompt = (
+            system_prompt()
+            + "\n\n只输出一个 JSON 对象，不要调用任何工具，不要输出任何多余文字。\n"
+            + "用户输入："
+            + json.dumps(
+                {"text": text, "default_drone": drone, "recent_feedback": context or []},
+                ensure_ascii=False,
             )
-        if not self.settings.base_url or not self.settings.model:
-            raise LLMProviderError("LLM_BASE_URL and LLM_MODEL are required for openai_compatible provider")
-
-        payload = {
-            "model": self.settings.model,
-            "messages": [
-                {"role": "system", "content": system_prompt()},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "text": text,
-                            "default_drone": drone,
-                            "recent_feedback": context or [],
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-            "temperature": 0.1,
-            "max_tokens": 512,
-            "response_format": {"type": "json_object"},
-        }
-        if self.settings.provider == "deepseek":
-            payload["thinking"] = {"type": "disabled"}
-
-        url = self.settings.base_url.rstrip("/") + "/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.settings.api_key}",
-            "Content-Type": "application/json",
-        }
-        async with httpx.AsyncClient(timeout=self.settings.timeout_sec) as client:
-            response = await client.post(url, headers=headers, json=payload)
-
-        if response.status_code >= 400:
-            raise LLMProviderError(f"LLM API error {response.status_code}: {response.text[:500]}")
-
-        data = response.json()
+        )
+        # 每个 replan 用独立的临时工作区（--cwd），避免复用 AGH 的持久化 workspace 会话：
+        # 持久化会话在超时/孤儿 turn 后会卡死（one-shot 返回空 text、credits.used=0），
+        # 换新工作区即可绕过。用完即删。
+        workspace = tempfile.mkdtemp(prefix="safedrones-replan-")
+        cmd = [
+            self.settings.agh_node,
+            self.settings.agh_cli,
+            "-p",
+            prompt,
+            "--mode",
+            "json",
+            "--cwd",
+            workspace,
+        ]
+        proc: asyncio.subprocess.Process | None = None
         try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMProviderError("LLM API response missing choices[0].message.content") from exc
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.settings.timeout_sec)
+            except asyncio.TimeoutError as exc:
+                # 超时必须杀掉子进程，否则 node 进程变孤儿、把该会话的 turn 卡死
+                if proc is not None and proc.returncode is None:
+                    proc.kill()
+                    try:
+                        await proc.wait()
+                    except (ProcessLookupError, asyncio.TimeoutError):
+                        pass
+                raise LLMProviderError("AGH replan timed out") from exc
+        except FileNotFoundError as exc:
+            raise LLMProviderError(
+                f"AGH CLI not found; set AGH_NODE/AGH_CLI "
+                f"(node={self.settings.agh_node}, cli={self.settings.agh_cli})"
+            ) from exc
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
 
+        if proc.returncode != 0:
+            detail = stderr.decode("utf-8", "replace")[-500:] if stderr else ""
+            raise LLMProviderError(f"AGH replan failed (exit {proc.returncode}): {detail}")
+
+        try:
+            outer = json.loads(stdout.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise LLMProviderError("AGH replan returned non-JSON output") from exc
+
+        content = str(outer.get("text") or "")
         return parse_waypoint_plan(extract_json_object(content), default_drone=drone)
 
 
