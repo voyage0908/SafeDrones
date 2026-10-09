@@ -104,21 +104,19 @@ SafeDrones/
 │   ├── gen_results_md.py   # 生成 RESULTS.md
 │   └── ...
 ├── tests/                  # 单元测试（84 个）
-├── docs/                   # 文档（中文）
 ├── unity/                  # Unity 3D 可视化（可选）
-├── gateway.py              # 旧版 FastAPI 网关（已被 AGH 取代，保留兼容）
+├── gateway.py              # 命令/事件 HTTP 接口（MQTT 网关封装）
 ├── mock_drone.py           # 虚拟无人机入口
 ├── safety_gate.py          # Safety Gate 入口
 ├── marl_pilot.py           # MARL 飞控入口
 └── RESULTS.md              # C2/C3/C4 消融对比
 ```
 
-## 上游项目与致谢
+## 致谢
 
-本作品基于开源项目 [SafeDrones](https://github.com/Vitalrubbish/SafeDrones) 二次开发：
-保留其 MARL 飞控、Safety Gate、MockDrone 执行层与双向安全协议思想，将原方案的高层指挥官
-（自研 FastAPI 网关 + DeepSeek）替换为 **AGH 智能体 + Agnes 模型**，并新增 MCP 桥、
-AGH one-shot 重规划与 C4 消融闭环。执行层与安全协议思想归功于上游项目。
+本作品执行层的 MARL 飞控、Safety Gate、MockDrone 与「双向安全协议」思想基于开源项目
+[SafeDrones](https://github.com/Vitalrubbish/SafeDrones) 构建，在此致谢。高层指挥官
+**AGH 智能体 + Agnes 模型**、MCP 桥与 C4 消融闭环为本作品实现。
 
 ## 许可证
 

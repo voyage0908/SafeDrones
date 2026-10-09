@@ -9,10 +9,10 @@ import shutil
 import tempfile
 from typing import Any
 
-# 唯一模型后端 = AGH 智能体（Agnes 模型）。Python 侧不再直接调用任何 LLM API：
+# 唯一模型后端 = AGH 智能体（Agnes 模型）。Python 侧不直接调用任何 LLM API：
 # 这里通过 AGH CLI 的一次 one-shot 会话触发 Agnes 完成「自然语言 → JSON 航点」。
 # 比赛红线：Python 代码不得出现任何第三方模型名，所有模型调用只发生在 AGH 内部。
-DEFAULT_AGH_CLI = "C:/Users/Lenovo/Desktop/AI+黑马竞赛/agnes-harness/packages/cli/dist/local/agnes.mjs"
+DEFAULT_AGH_CLI = ""  # 由 AGH_CLI 环境变量指定 AGH CLI 路径（agnes-harness 的 packages/cli/dist/local/agnes.mjs）
 DEFAULT_AGH_PROFILE = "local-dev"
 
 
@@ -54,13 +54,18 @@ def load_llm_settings() -> LLMSettings:
         )
 
     if provider in {"agnes", "agh"}:
+        agh_cli = os.getenv("AGH_CLI", DEFAULT_AGH_CLI)
+        if not agh_cli:
+            raise LLMProviderError(
+                "AGH_CLI not set; point it at agnes-harness's packages/cli/dist/local/agnes.mjs"
+            )
         return LLMSettings(
             provider="agnes",
             api_key=None,
             base_url="",
-            model=os.getenv("AGNES_MODEL", "agnes"),
+            model=os.getenv("AGNES_MODEL", "agnes-3.0-flash"),
             timeout_sec=float(os.getenv("LLM_TIMEOUT_SEC", "60")),
-            agh_cli=os.getenv("AGH_CLI", DEFAULT_AGH_CLI),
+            agh_cli=agh_cli,
             agh_node=os.getenv("AGH_NODE", "node"),
             agh_profile=os.getenv("AGH_PROFILE", DEFAULT_AGH_PROFILE),
         )
