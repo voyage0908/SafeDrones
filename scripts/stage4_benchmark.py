@@ -822,7 +822,13 @@ def build_services(
                 services.append(ManagedService(f"safety_gate_{camera_ns}", gate_cmd, log_dir))
         else:
             gate_cmd = [python, "safety_gate.py", *port_args, *ego_topic_args]
-            if scenario.blue_ids:
+            if scenario.name in {"formation_crossing", "four_v_four"}:
+                # 密集多机场景：红方也在蜂群内，其碰撞同样威胁安全，
+                # 因此保护全部无人机（对称保护），让红红/蓝红碰撞都能被化解。
+                # 垂直避障增益给相遇对提供额外的高度分离，提升种子鲁棒性。
+                gate_cmd += ["--protect-ids"] + [str(d) for d in scenario.all_ids()]
+                gate_cmd += ["--vertical-escape-gain", "0.5", "--escape-distance", "1.2"]
+            elif scenario.blue_ids:
                 gate_cmd += ["--protect-ids"] + [str(d) for d in scenario.blue_ids]
             services.append(ManagedService("safety_gate", gate_cmd, log_dir))
     return services, mqtt_port
