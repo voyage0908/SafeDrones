@@ -49,6 +49,16 @@ def main() -> None:
                         help="Override 触发后至少持续该秒数，即使风险下降或目标丢失也不提前释放。")
     parser.add_argument("--vertical-escape-gain", type=float, default=0.0,
                         help="垂直避障增益：0=纯水平避障，>0 时按无人机奇偶性加入垂直分量。")
+    parser.add_argument("--orca", action="store_true",
+                        help="启用 ORCA 互惠速度障碍：override/warning 的分流航点改用协同速度方向。")
+    parser.add_argument("--orca-early", action="store_true",
+                        help="ORCA 提前预警：把速度障碍的「到碰撞时间」叠加到风险（只增不减）。需 --orca。")
+    parser.add_argument("--orca-time-horizon", type=float, default=2.0,
+                        help="ORCA 预测时域（秒）。")
+    parser.add_argument("--orca-responsibility", type=float, default=0.5,
+                        help="ORCA 互惠分摊比例（0.5 = 标准 ORCA）。")
+    parser.add_argument("--orca-radius", type=float, default=1.6,
+                        help="ORCA 几何碰撞半径（双方半径之和）= 期望保持的舒适间距（默认 1.6 = safe-distance）。")
     parser.add_argument("--override-command-interval", type=float, default=0.5)
     parser.add_argument("--status-interval", type=float, default=1.0)
     parser.add_argument(
@@ -80,6 +90,11 @@ def main() -> None:
         hold_sec=args.hold_sec,
         min_override_sec=args.min_override_sec,
         vertical_escape_gain=args.vertical_escape_gain,
+        orca_enabled=args.orca,
+        orca_early=args.orca_early,
+        orca_time_horizon_sec=args.orca_time_horizon,
+        orca_responsibility=args.orca_responsibility,
+        orca_radius_m=args.orca_radius,
     )
     gate = SafetyGate(config)
     snapshots: dict[int, DroneSnapshot] = {}

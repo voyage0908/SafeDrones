@@ -865,6 +865,7 @@ def build_services(
     start_positions: dict[int, list[float]] | None = None,
     gate_mode: str = "network",
     input_mode: str = "gt",
+    orca: bool = False,
 ) -> tuple[list[ManagedService], int]:
     python = sys.executable
     mqtt_port = 1883
@@ -1015,6 +1016,8 @@ def build_services(
                 gate_cmd += ["--vertical-escape-gain", "0.5", "--escape-distance", "1.2"]
             elif scenario.blue_ids:
                 gate_cmd += ["--protect-ids"] + [str(d) for d in scenario.blue_ids]
+            if orca:
+                gate_cmd += ["--orca"]
             services.append(ManagedService("safety_gate", gate_cmd, log_dir))
     return services, mqtt_port
 
@@ -1130,6 +1133,7 @@ def run_trial(
     packet_loss_rate: float = 0.0,
     gate_mode: str = "network",
     input_mode: str = "gt",
+    orca: bool = False,
 ) -> dict[str, Any]:
     targets = scenario.targets_for_seed(seed)
     services, mqtt_port = build_services(
@@ -1141,6 +1145,7 @@ def run_trial(
         start_positions={did: targets[f"drone{did}_start"] for did in scenario.all_ids()},
         gate_mode=gate_mode,
         input_mode=input_mode,
+        orca=orca,
     )
     monitor = Stage4Monitor("127.0.0.1", mqtt_port, qos=0,
                             expected_drones=scenario.drone_count)
@@ -1396,6 +1401,11 @@ def main() -> None:
         help="State source for pilot/gate: gt = telemetry truth; ego = camera perception via ego_bridge "
         "(requires Unity cameras and scripts/sim_cam_perception.py running).",
     )
+    parser.add_argument(
+        "--orca",
+        action="store_true",
+        help="把 safety_gate 的分流航点升级为 ORCA 互惠速度障碍（预测式协同避障）。",
+    )
     args = parser.parse_args()
 
     if args.seeds <= 0:
@@ -1428,6 +1438,7 @@ def main() -> None:
                         packet_loss_rate=args.packet_loss,
                         gate_mode=args.gate_mode,
                         input_mode=args.input_mode,
+                        orca=args.orca,
                     )
                     results.append(result)
                     runs_file.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")

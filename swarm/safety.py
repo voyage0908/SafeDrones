@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from swarm.simulation import Vector3
+from swarm.orca import orca_pair_risk, orca_velocity
 
 
 def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -62,6 +63,21 @@ class SafetyConfig:
     min_override_sec: float = 0.0
     # 垂直避障增益：0 表示纯水平避障，>0 时按无人机奇偶性加入垂直分量。
     vertical_escape_gain: float = 0.0
+    # ORCA 互惠速度障碍（预测式协同避障）开关。默认关闭，保持反应式行为不变；
+    # 开启后 override/warning 的分流航点改用 ORCA 协同速度方向（检测阈值不变）。
+    orca_enabled: bool = False
+    # ORCA 提前预警：把速度障碍意义下的「到碰撞时间」叠加到现有风险（只增不减），
+    # 让安全门在瞬时距离/TTC 尚未越限时就预判 τ 秒内的碰撞。仅 orca_enabled 时生效。
+    orca_early: bool = False
+    # ORCA 预测时域（秒）。
+    orca_time_horizon_sec: float = 2.0
+    # 互惠分摊比例：0.5 = 标准 ORCA（双方各承担一半速度修正）。
+    orca_responsibility: float = 0.5
+    # ORCA 的几何碰撞半径（双方半径之和）= 期望保持的舒适间距。取 safe_distance_m（1.6）
+    # 而非物理碰撞半径（0.25）：否则 ORCA 只保证「物理不碰」、会把机距放到 ~0.25m 才算无碰撞，
+    # 达不到安全门的舒适间距语义。反应式门在 ttc≈1.8m 就触发 override，此时 d>1.6 仍在非重叠
+    # 分支、能给出正常偏转；仅 d≤1.6 的已重叠情形会退化，由反应式距离风险兜底。
+    orca_radius_m: float = 1.6
 
 
 @dataclass(frozen=True)
@@ -186,6 +202,61 @@ def safety_diversion_waypoint(snapshot: DroneSnapshot, pair: PairRisk, config: S
     return waypoint
 
 
+def _horizontal(v: Vector3) -> tuple[float, float]:
+    return (v[0], v[1])
+
+
+def orca_diversion_waypoint(
+    snapshot: DroneSnapshot,
+    snapshots: list[DroneSnapshot],
+    config: SafetyConfig,
+    worst: PairRisk | None,
+) -> Vector3 | None:
+    """用 ORCA 协同速度给 override/warning 生成分流航点（水平面）。
+
+    与 safety_diversion_waypoint 的区别：避障方向不再「背离最坏单对」，而是在速度空间
+    对所有邻居做互惠速度障碍求解，取「最接近期望速度、且对所有邻居都无碰撞」的协同速度
+    方向——邻居间互惠分摊避让责任，避免密集场景多机各自躲反而互相挤。垂直分离仍叠加
+    config.vertical_escape_gain（符号按 worst 对 ID 大小决定，与反应式一致）。
+
+    若 ORCA 退化（无邻居或协同速度近零，极少数共点情形）返回 None，由调用方回退到
+    safety_diversion_waypoint。
+    """
+    neighbors = [
+        (_horizontal(o.position), _horizontal(velocity_toward_target(o)))
+        for o in snapshots
+        if o.drone_id != snapshot.drone_id
+    ]
+    if not neighbors:
+        return None
+
+    position = _horizontal(snapshot.position)
+    current = _horizontal(velocity_toward_target(snapshot))
+    v_new = orca_velocity(
+        position,
+        current,
+        current,  # preferred = 当前期望速度（朝目标），ORCA 求最接近它的无碰撞速度
+        neighbors,
+        combined_radius=config.orca_radius_m,
+        time_horizon=config.orca_time_horizon_sec,
+        responsibility=config.orca_responsibility,
+        max_speed=config.max_speed_mps,
+    )
+
+    horizontal_dir = (v_new[0], v_new[1], 0.0)
+    if _norm(horizontal_dir) < 1e-6:
+        return None
+
+    vertical_sign = 1.0 if (worst is not None and snapshot.drone_id < worst.target_drone) else -1.0
+    vertical_dir = (0.0, 0.0, vertical_sign * config.vertical_escape_gain)
+    safety_dir = _normalize(_add(horizontal_dir, vertical_dir))
+
+    escape_distance = max(config.escape_distance_m, config.safe_distance_m * 0.75)
+    waypoint = _add(snapshot.position, _scale(safety_dir, escape_distance))
+    waypoint = (waypoint[0], waypoint[1], _clamp(waypoint[2], 0.5, 2.0))
+    return waypoint
+
+
 class SafetyGate:
     def __init__(self, config: SafetyConfig | None = None):
         self.config = config or SafetyConfig()
@@ -199,13 +270,31 @@ class SafetyGate:
         for snapshot in snapshots:
             worst = self._worst_pair(snapshot, snapshots)
             risk = worst.risk if worst else 0.0
+            if self.config.orca_enabled and self.config.orca_early and worst is not None:
+                # 预测式提前预警：把速度障碍的「到碰撞时间」叠加到现有风险（只增不减），
+                # 在瞬时距离/TTC 尚未越限时就预判 τ 秒内的碰撞。
+                peer = self._snapshot_by_id(snapshots, worst.target_drone)
+                if peer is not None:
+                    risk = max(
+                        risk,
+                        orca_pair_risk(
+                            _horizontal(snapshot.position),
+                            _horizontal(velocity_toward_target(snapshot)),
+                            _horizontal(peer.position),
+                            _horizontal(velocity_toward_target(peer)),
+                            self.config.orca_radius_m,
+                            self.config.orca_time_horizon_sec,
+                        ),
+                    )
             mode = self._mode(snapshot.drone_id, risk, now)
             reason = "collision_risk_exceeded" if mode == "override" else None
-            safety_waypoint = (
-                safety_diversion_waypoint(snapshot, worst, self.config)
-                if mode in {"override", "warning"} and worst is not None
-                else None
-            )
+            safety_waypoint = None
+            if mode in {"override", "warning"} and worst is not None:
+                if self.config.orca_enabled:
+                    safety_waypoint = orca_diversion_waypoint(snapshot, snapshots, self.config, worst) \
+                        or safety_diversion_waypoint(snapshot, worst, self.config)
+                else:
+                    safety_waypoint = safety_diversion_waypoint(snapshot, worst, self.config)
             decisions.append(
                 SafetyDecision(
                     drone=snapshot.drone_id,
@@ -231,6 +320,15 @@ class SafetyGate:
             if other.drone_id != snapshot.drone_id
         ]
         return max(pairs, key=lambda pair: pair.risk, default=None)
+
+    @staticmethod
+    def _snapshot_by_id(snapshots: list[DroneSnapshot], drone_id: int | None) -> DroneSnapshot | None:
+        if drone_id is None:
+            return None
+        for snapshot in snapshots:
+            if snapshot.drone_id == drone_id:
+                return snapshot
+        return None
 
     def _mode(self, drone_id: int, risk: float, now: float) -> str:
         held_until = self._override_until.get(drone_id, 0.0)

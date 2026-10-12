@@ -67,6 +67,31 @@ Safety Gate (safety_gate.py)  ←→  飞控状态/遥测
   自动注入对撞制造 `safety_override`，把「重规划」一步留给 AGH 完成
 - 录制步骤见 [DEMO_MCP.md](DEMO_MCP.md)
 
+## 预测式协同避障（ORCA 互惠速度障碍）
+
+> 对应评分维度「技术深度与系统实现（10%）」+「验证严谨性（10%）」。这是升级 B 的**诚实负结果**：
+> 我们实现并验证了教科书级 ORCA，但结论是它**不适合**替换本项目的硬安全底线——详见下方消融。
+
+安全门默认的避障是**反应式启发式**（`pair_collision_risk` 合成瞬时距离/接近速度/TTC，
+`safety_diversion_waypoint` 背离最坏单对 + 横向 + 垂直）。为考察「预测式协同」是否更强，我们实现了
+**ORCA（互惠速度障碍，van den Berg et al. 2011）**：在速度空间求「对所有邻居都无碰撞、且最接近期望
+速度」的协同速度。实现为与 RVO2 库等价的 **2D 线性规划**（`swarm/orca.py`，纯函数、无 I/O、精确解）：
+
+- `orca_velocity(...)`：n 体互惠速度求解（`linearProgram1/2/3`）
+- `orca_pair_risk(...)`：速度障碍意义下的「到碰撞时间」（预测式风险原语）
+- `orca_diversion_waypoint(...)`：用 ORCA 协同速度方向生成分流航点
+
+全部 **config 门控、默认关闭**（`orca_enabled=False`），现有关键路径（C2/C3/C4 的 84 单测 + 消融数据）
+零改动、零风险。开关见 `safety_gate.py --orca / --orca-early`，benchmark 见 `stage4_benchmark.py --orca`。
+
+**诚实结论（确定性消融，非 MQTT 时序噪声）**：在对称相向穿越与随机密集交叉的进程内仿真里，ORCA 的
+「最小偏离」天性把它推向**更平滑但更危险**的一端——它让接管数下降（相向 6 vs 0、密集 39 vs 166），
+却换来**更小最小间距**（相向 1.6m vs 3.6m）与**更多碰撞**（密集 11 vs 0）。根因：ORCA 只保证
+`combined_radius`（舒适间距）处「勉强擦过」，而反应式的「背离 + 垂直」把机距拉到安全舒适区之外。
+对「硬安全底线」这一角色，**保守的反应式启发式才是正确工具**，ORCA 作为经典算法是合法但不更优的替代。
+ORCA 保留的有价值原语是 `orca_pair_risk`——用完整 2D 相对速度向量预判碰撞，比反应式标量 TTC 更准，
+供 `--orca-early` 做「提前预警」的学术演示。详见 [RESULTS.md](RESULTS.md) 的 ORCA 对比表。
+
 ## 消融实验（C2 / C3 / C4）
 
 | 条件 | 说明 |
@@ -120,6 +145,7 @@ SafeDrones/
 ├── swarm/                  # 核心包
 │   ├── simulation.py       # 无人机运动学模拟
 │   ├── safety.py           # Safety Gate 碰撞风险评估
+│   ├── orca.py             # ORCA 互惠速度障碍（预测式协同避障，纯函数）
 │   ├── marl.py             # MARL 飞控（规则基线 + ONNX 推理）
 │   ├── llm_provider.py     # LLM 指挥（AGH/Agnes one-shot）
 │   └── mqtt_gateway.py     # MQTT 网关封装
