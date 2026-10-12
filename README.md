@@ -42,6 +42,31 @@ Safety Gate (safety_gate.py)  ←→  飞控状态/遥测
 2. **上行反馈**：否决同时产生 `safety_override` 结构化事件，AGH 通过 `list_safety_events`
    读取后生成恢复航点重新下发，形成重规划闭环
 
+## 模型执行闭环（Agnes Harness + MCP）
+
+> 对应评分维度「Agnes Harness 与模型执行闭环（20%）」。模型调用全部发生在 AGH 内部，
+> Python 侧无任何第三方模型（`mcp_bridge.py` 只暴露 MQTT 与结构化航点，无 LLM）。
+
+闭环由 **Agnes 模型（在 AGH 内）自己调用 MCP 工具**完成，而非 Python 侧 thin one-shot 代跑：
+
+1. **上行**：Safety Gate 检出碰撞 → `safety_override` 事件经 MQTT 进入 `mcp_bridge.py` 缓存；
+   Agnes 模型调 `list_safety_events` 读到否决事件
+2. **感知**：调 `read_telemetry` 读取涉事无人机位置/速度，`list_drones` 确认在线机
+3. **重规划**：调 `publish_waypoint` 下发侧向避让航点（保持高度、横向偏移）
+4. **兜底**：必要时调 `emergency_abort` 令单机悬停
+
+关键实现点：
+
+- `mcp_bridge.py` 暴露 5 个 MCP 工具（`publish_waypoint` / `read_telemetry` / `list_drones` /
+  `list_safety_events` / `emergency_abort`），注册为 AGH 的 `safedrones` 桥（trusted + enabled + ready）；
+  读工具带 `read_only_hint`，天然免审批、语义正确
+- 写工具（`publish_waypoint` / `emergency_abort`）是破坏性动作，正式运行在 AGH TUI 用一等机制
+  **`/yolo`** 授信一次（会话级跳过审批、零框架改动），或给预设加 `mcp_safedrones_.*` 的
+  `command_policy` allow 规则
+- 演示场景 `scripts/agh_mcp_scenario.py`：起 broker + 2 架相向 mock drone + safety_gate，
+  自动注入对撞制造 `safety_override`，把「重规划」一步留给 AGH 完成
+- 录制步骤见 [DEMO_MCP.md](DEMO_MCP.md)
+
 ## 消融实验（C2 / C3 / C4）
 
 | 条件 | 说明 |
@@ -101,6 +126,8 @@ SafeDrones/
 ├── mcp_bridge.py           # MCP 桥（stdio，5 工具）→ 暴露执行层给 AGH
 ├── scripts/                # 工具脚本
 │   ├── stage4_benchmark.py # 消融实验自动化 Runner
+│   ├── agh_mcp_scenario.py # AGH 闭环演示场景（起 broker+drone+gate，注入对撞）
+│   ├── dev_broker.py       # 开发用 MQTT broker（amqtt）
 │   ├── gen_results_md.py   # 生成 RESULTS.md
 │   └── ...
 ├── tests/                  # 单元测试（84 个）
@@ -109,6 +136,7 @@ SafeDrones/
 ├── mock_drone.py           # 虚拟无人机入口
 ├── safety_gate.py          # Safety Gate 入口
 ├── marl_pilot.py           # MARL 飞控入口
+├── DEMO_MCP.md             # 模型执行闭环演示录制指南
 └── RESULTS.md              # C2/C3/C4 消融对比
 ```
 

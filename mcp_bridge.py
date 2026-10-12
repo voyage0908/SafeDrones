@@ -207,6 +207,7 @@ def publish_waypoint(
 @server.tool(
     name="read_telemetry",
     description="读取指定无人机的最新遥测（位置 position、速度 velocity、status、last_command_id 等）。若暂无遥测返回 null。",
+    annotations={"read_only_hint": True},
 )
 def read_telemetry(drone: int) -> dict[str, Any] | None:
     return BRIDGE.latest_telemetry(drone)
@@ -215,6 +216,7 @@ def read_telemetry(drone: int) -> dict[str, Any] | None:
 @server.tool(
     name="list_drones",
     description="列出当前有遥测上报的所有无人机 id。用于确认哪些无人机在线。",
+    annotations={"read_only_hint": True},
 )
 def list_drones() -> list[int]:
     return BRIDGE.known_drones()
@@ -227,6 +229,7 @@ def list_drones() -> list[int]:
         "since_ms 只返回该毫秒时间戳之后的事件；返回列表按时间升序。"
         "这是「双向安全协议」的上行通道：AGH 收到 safety_override 后应重新规划航点。"
     ),
+    annotations={"read_only_hint": True},
 )
 def list_safety_events(since_ms: int = 0, limit: int = 20) -> list[dict[str, Any]]:
     return BRIDGE.recent_events(since_ms=since_ms, limit=limit)
