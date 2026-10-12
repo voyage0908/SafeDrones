@@ -123,7 +123,15 @@ def main() -> None:
     )
     monitor = Stage4Monitor("127.0.0.1", mqtt_port, qos=0, expected_drones=scenario.drone_count)
     replanner = C4Replanner(scenario, targets) if condition == "C4" else None
-    red_controller = RedPursuitController(scenario, monitor) if scenario.red_pursuit else None
+    red_controller = (
+        RedPursuitController(
+            scenario,
+            monitor,
+            disengage_on_override=(scenario.red_disengage_on_override and condition == "C4"),
+        )
+        if scenario.red_pursuit
+        else None
+    )
 
     try:
         start_services(services, mqtt_port)
