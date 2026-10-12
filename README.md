@@ -106,6 +106,11 @@ ORCA 保留的有价值原语是 `orca_pair_risk`——用完整 2D 相对速度
 - C3/C4 在 5 个对称交叉场景碰撞率 0
 - C4 在零碰撞的同时实现安全门否决后的 AGH 恢复航点重规划，重规划失败 0
 
+**可复现性**：安全结论（C2=碰撞、C3/C4=0 碰撞）是确定性的，由
+`scripts/stage4_benchmark_deterministic.py` 在进程内固定步长复现（复用相同 `Scenario` 几何 +
+`SafetyGate` + `MockDroneState`），10 种子逐 bit 可复现；`stage4_benchmark.py` 为实时多进程 MQTT
+端到端集成基准，其绝对值受时序影响、作冒烟测试用。详见 [RESULTS.md](RESULTS.md) 的「可复现性说明」。
+
 ## 环境要求
 
 - Python ≥ 3.10（本项目用 3.13 的 `.venv`）
@@ -151,7 +156,8 @@ SafeDrones/
 │   └── mqtt_gateway.py     # MQTT 网关封装
 ├── mcp_bridge.py           # MCP 桥（stdio，5 工具）→ 暴露执行层给 AGH
 ├── scripts/                # 工具脚本
-│   ├── stage4_benchmark.py # 消融实验自动化 Runner
+│   ├── stage4_benchmark.py # 消融实验自动化 Runner（实时 MQTT，端到端集成）
+│   ├── stage4_benchmark_deterministic.py # 进程内确定性基准（可复现 C2/C3 安全结论）
 │   ├── agh_mcp_scenario.py # AGH 闭环演示场景（起 broker+drone+gate，注入对撞）
 │   ├── dev_broker.py       # 开发用 MQTT broker（amqtt）
 │   ├── gen_results_md.py   # 生成 RESULTS.md

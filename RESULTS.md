@@ -3,6 +3,35 @@
 > 固定 10 个随机种子 × 8 个场景 × 3 个条件（C2 无安全 / C3 仅安全门 / C4 安全门+AGH 重规划）。
 > 所有模型调用发生在 **AGH 智能体（Agnes 模型）** 内部，Python 侧无任何第三方模型。
 
+## 可复现性说明（先读这个）
+
+`stage4_benchmark.py` 是**实时多进程 MQTT 系统**（8–11 个并发 Python 进程 + amqtt broker + qos=0），
+其 `min_distance` / 成功率的绝对值受进程调度与消息时序影响，在不同机器 / 负载下会抖动（本机复现
+formation C3 20% vs 文档 100%、four_v_four C3 0% vs 文档 50%）。这**不影响安全结论本身**：结论是
+确定性的，应由 `scripts/stage4_benchmark_deterministic.py`（同一进程、固定步长，复用完全相同的
+`Scenario` 几何 + `SafetyGate` + `MockDroneState` 运动学，只去掉 MQTT / 多进程 / 墙钟）给出**逐 bit
+可复现**的数字。
+
+确定性仿真（6 个无红方追击的对称穿越场景 × 10 种子）**复现文档 C2/C3 安全结论**：
+
+| 场景 | C2 碰撞率 | C2 最坏最小间距(m) | C3 碰撞率 | C3 成功率 | C3 最坏最小间距(m) |
+|---|---|---|---|---|---|
+| 相向穿越 (head-on) | 10/10 | 0.044 | 0/10 | 10/10 | 0.805 |
+| 垂直交叉 (perpendicular) | 10/10 | 0.000 | 0/10 | 10/10 | 1.001 |
+| 斜向交叉 (diagonal) | 10/10 | 0.000 | 0/10 | 10/10 | 0.932 |
+| LLM 掉线 (llm_timeout) | 10/10 | 0.044 | 0/10 | 10/10 | 0.805 |
+| 四向交叉 (four-way) | 10/10 | 0.014 | 0/10 | 10/10 | 0.643 |
+| 编队交叉 (formation) | 10/10 | 0.030 | 0/10 | 10/10 | 0.594 |
+
+> **证据层级**：确定性进程内仿真 = 安全结论的**主要定量证据**（可复现、可复核）；
+> `stage4_benchmark.py` MQTT 基准 = 端到端集成冒烟测试（证明整套架构能跑通，绝对值指示性、受时序影响）。
+> `pursuit_intercept` / `four_v_four` 含红方追击微控（`RedPursuitController`，对抗/任务级），不在
+> 确定性「硬安全底线」脚本建模范围内，其结果以 MQTT 基准 + 下方文档说明为准。
+> 生成：`python scripts/stage4_benchmark_deterministic.py --scenario all --conditions C2,C3 --seeds 10`，
+> 输出 `results/stage4_deterministic/{summary,aggregate}.csv`。
+
+## 端到端 MQTT 基准（集成冒烟测试，绝对值受时序影响）
+
 | 场景 | 条件 | 成功率 | 碰撞率 | 最坏最小间距(m) | 安全门接管 | LLM 重规划 | 重规划失败 |
 |---|---|---|---|---|---|---|---|
 | 相向穿越 (head-on) | C2 无安全门 | 0% | 100% | 0.02 | 0.00 | 0.00 | 0.00 |
@@ -49,7 +78,10 @@
 >
 > 改进④（红方主动爬升脱战）：③ 的「脱战冷却」只是让红方不追，红方仍停在安全门偏离点附近（离蓝方 ~1.2m），蓝方经过时仍会被安全门散射——个别 seed 里蓝方被压到地面/偏离航线后无法复位，是 90% 天花板里那 10% 的残留失败。④ 把冷却期改为**主动爬升到 z=2.0**（原地不动 x/y）：垂直拉开 ~1m，使 pair 风险降到 override 阈值(0.70)以下、落入 warning/normal，安全门不再反复接管，蓝方从下方干净通过。four_v_four C4 由此稳定 **100%**（10/10，含此前边界 seed），安全门接管数降至 ~17，最坏最小间距 0.38m。同样确定性、不依赖 LLM、零延迟，与③同范围（仅 four_v_four 且仅 C4）。
 >
-> 数据来源：`scripts/stage4_benchmark.py` 生成（`runs.jsonl` / `summary.csv` / `aggregate.csv`）。C2/C3 与 C4 为两轮独立运行，C4 使用修复后的 AGH one-shot（每次 replan 独立工作区），`AGH_CLI` 指向 agnes-harness CLI、Key 经 `~/.agh/secrets` 直读（不入库）。
+> 数据来源：主表由 `scripts/stage4_benchmark.py`（实时 MQTT）生成（`runs.jsonl` / `summary.csv` / `aggregate.csv`）；
+> 可复现的 C2/C3 安全结论由 `scripts/stage4_benchmark_deterministic.py`（进程内确定性）生成
+> （`results/stage4_deterministic/{summary,aggregate}.csv`）。C2/C3 与 C4 为两轮独立运行，C4 使用修复后的
+> AGH one-shot（每次 replan 独立工作区），`AGH_CLI` 指向 agnes-harness CLI、Key 经 `~/.agh/secrets` 直读（不入库）。
 
 ---
 
