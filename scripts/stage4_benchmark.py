@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import bisect
 import csv
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1125,6 +1126,84 @@ def wait_for_crossing_completion(
     return False
 
 
+def min_distance_from_trajectories(log_dir: Path, drone_ids: list[int]) -> float | None:
+    """从地面真值轨迹同步计算最小机距（替代 monitor 的异步遥测配对）。
+
+    原 Stage4Monitor 拿「每架最新一条遥测」两两配对算距离：两架独立进程的遥测时间戳
+    在穿越最快处会错位，配对出的距离低报（把 0.688m 的真实最小间距报成 0.10m 的假碰撞）。
+    这里改为读每架 drone 自己落盘的地面真值轨迹（与遥测逐字节一致），按时间戳把各架轨迹
+    线性插值到公共时间网格，再取全配对最小距离——与真实运动学一致，逐机距可复现。
+    """
+    tracks: dict[int, list[tuple[int, tuple[float, float, float]]]] = {}
+    for did in drone_ids:
+        path = log_dir / f"drone{did}_trajectory.jsonl"
+        if not path.exists():
+            continue
+        pts: list[tuple[int, tuple[float, float, float]]] = []
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    pos = rec.get("position")
+                    ts = rec.get("timestamp_ms")
+                    if pos is None or ts is None or len(pos) < 3:
+                        continue
+                    pts.append((int(ts), (float(pos[0]), float(pos[1]), float(pos[2]))))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError):
+            continue
+        if len(pts) < 2:
+            continue
+        pts.sort(key=lambda p: p[0])
+        tracks[did] = pts
+
+    if len(tracks) < 2:
+        return None
+
+    lo = max(pts[0][0] for pts in tracks.values())
+    hi = min(pts[-1][0] for pts in tracks.values())
+    if hi <= lo:
+        return None
+
+    grid = sorted({ts for pts in tracks.values() for ts, _ in pts if lo <= ts <= hi})
+    dids = sorted(tracks.keys())
+
+    def _interp(
+        pts: list[tuple[int, tuple[float, float, float]]], t: int
+    ) -> tuple[float, float, float]:
+        times = [p[0] for p in pts]
+        idx = bisect.bisect_left(times, t)
+        if idx == 0:
+            return pts[0][1]
+        if idx >= len(pts):
+            return pts[-1][1]
+        t0, p0 = pts[idx - 1]
+        t1, p1 = pts[idx]
+        if t1 == t0:
+            return p0
+        w = (t - t0) / (t1 - t0)
+        return (
+            p0[0] + (p1[0] - p0[0]) * w,
+            p0[1] + (p1[1] - p0[1]) * w,
+            p0[2] + (p1[2] - p0[2]) * w,
+        )
+
+    min_d2 = float("inf")
+    for t in grid:
+        pos = {did: _interp(tracks[did], t) for did in dids}
+        for i in range(len(dids)):
+            a = pos[dids[i]]
+            for j in range(i + 1, len(dids)):
+                b = pos[dids[j]]
+                dx, dy, dz = a[0] - b[0], a[1] - b[1], a[2] - b[2]
+                d2 = dx * dx + dy * dy + dz * dz
+                if d2 < min_d2:
+                    min_d2 = d2
+    return round(math.sqrt(min_d2), 4)
+
+
 def run_trial(
     condition: str,
     scenario: Scenario,
@@ -1211,7 +1290,11 @@ def run_trial(
         crossing_duration_sec = time.time() - cross_started_at
 
         summary = monitor.summary(swap_completed=swap_completed)
-        min_distance = summary["min_distance_m"]
+        # 最小机距改用地面真值轨迹同步计算：monitor 的「最新遥测异步配对」在快速穿越处会
+        # 低报间距（把 0.688m 报成 0.10m 的假碰撞）。轨迹缺数据时回退到 monitor 值。
+        min_distance = min_distance_from_trajectories(log_dir, list(scenario.all_ids()))
+        if min_distance is None:
+            min_distance = summary["min_distance_m"]
         collision_count = int(min_distance is not None and min_distance < scenario.collision_distance_m)
         near_miss_count = int(min_distance is not None and min_distance < scenario.near_miss_distance_m)
         c4_replan_success = replanner is None or (
