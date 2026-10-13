@@ -12,7 +12,7 @@
 
 - **高层**：AGH（Agnes Harness）作为智能体运行时底座，Agnes 模型负责语义感知与战术决策，
   通过 MCP 桥下发结构化 JSON 航点
-- **低层**：MARL 飞控以 20–50Hz 高频执行，保证跟踪的平滑与实时
+- **低层**：MARL 飞控以 20–50Hz 高频执行，保证跟踪的平滑与实时（规则基线优先，保留 MARL 学习接口，见「未来工作」）
 - **安全层**：独立于模型之外的 Safety Gate，用确定性规则实时评估碰撞风险、当场否决
 - **双向安全协议**：安全门下行否决 → 上行 override 事件 → AGH 读事件重规划 → 校验
 
@@ -110,8 +110,9 @@ ORCA 保留的有价值原语是 `orca_pair_risk`——用完整 2D 相对速度
 `scripts/stage4_benchmark_deterministic.py` 在进程内固定步长复现（复用相同 `Scenario` 几何 +
 `SafetyGate` + `MockDroneState`），10 种子逐 bit 可复现；C4 的确定性恢复（改进① 缓存「返回原任务
 终点」）使 C4 的安全结果与 C3 逐项一致、`replan_failure` 恒为 0，其 AGH/LLM 重规划闭环本身属功能演示
-（非逐 bit 数值主张）。`stage4_benchmark.py` 为实时多进程 MQTT 端到端集成基准，其绝对值受时序影响、
-作冒烟测试用。详见 [RESULTS.md](RESULTS.md) 的「可复现性说明」。
+（非逐 bit 数值主张）。`stage4_benchmark.py` 为实时多进程 MQTT 端到端集成基准，其碰撞度量已改为读
+地面真值轨迹同步计算（`min_distance_from_trajectories`，不再用易低报间距的异步遥测配对；其余指标仍
+受时序影响）、作冒烟测试用。详见 [RESULTS.md](RESULTS.md) 的「可复现性说明」。
 
 **丢包鲁棒性（升级 D）**：`--packet-loss 0.0,0.1,0.3,0.5` 在确定性基准里按固定种子注入「遥测丢包 +
 override 命令丢包」，量化通信劣化下的安全余量侵蚀——安全门在 0–30% 丢包率下几乎零碰撞、最坏最小间距
@@ -178,8 +179,23 @@ SafeDrones/
 ├── safety_gate.py          # Safety Gate 入口
 ├── marl_pilot.py           # MARL 飞控入口
 ├── DEMO_MCP.md             # 模型执行闭环演示录制指南
-└── RESULTS.md              # C2/C3/C4 消融对比
+├── RESULTS.md              # C2/C3/C4 消融对比
+└── COMPARISON.md           # 与原项目（上游 SafeDrones）的对比
 ```
+
+## 未来工作（展望）
+
+**低层飞控的强化学习化（MARL 落地）**：当前低层飞控运行的是**确定性规则基线**（`RuleMarlPilot`）。
+这是刻意为之——安全关键路径上「能不用学习就不学习」：规则基线可逐 bit 验证、无训练漂移，是安全门
+可信赖的基座。作为扩展点，`swarm/marl.py` 已备好完整的 **MARL 学习接口**（`MarlObservationBuilder`
+观测、`MarlRewardConfig` / `reward_for_transition` 奖励、`OnnxMarlPilot` ONNX 推理），低层控制器可
+平滑替换为学得的策略。展望下一步：在多机协同穿越环境上训练互惠避障策略（如 MAPPO / QMIX，或以
+「行为克隆规则基线」作暖启动），导出 ONNX 后由 `OnnxMarlPilot` 加载，**同时保持独立 Safety Gate 为
+不可越过的硬安全层**——学得越聪明、兜底越扎实，把 MARL 的鲁棒性与协作红利纳入，而不削弱确定性
+安全承诺。
+
+其它展望方向：真机迁移（Crazyflie 预留接口）、Unity 可视化闭环的实时遥测回放，以及把 ORCA 的
+`orca_pair_risk` 预测原语纳入「提前预警」的在线演示。
 
 ## 致谢
 

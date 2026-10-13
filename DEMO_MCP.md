@@ -63,6 +63,44 @@ publish_waypoint 下发一个侧向避让航点（保持高度、横向偏移）
 - 一句话讲清闭环：**Safety Gate 独立检出碰撞 → 下行 safety 命令接管 + 上行 override 事件
   经 MCP 回流 AGH → Agnes 模型读遥测、重规划、下发避让航点**。
 
+## Unity 可视化（双屏/三屏录制，可选但强烈推荐）
+
+评分项「Agnes Harness 与模型执行闭环（20%）」最直观的证据是**双屏同框**：
+
+- **Unity**：无人机运动 + 安全门否决的**颜色状态机**（蓝 → 黄 → 红）
+- **终端 1**：`safety_gate` 日志（下行否决）
+- **终端 2**：AGH TUI（模型读事件 → 重规划）
+
+Unity 侧**无需改任何代码**：`DroneTelemetrySubscriber` 已挂在 `SampleScene` 里，Play 即自动连接
+`127.0.0.1:1883`，订阅 `swarm/drone/+/telemetry`、`swarm/commander/status`、`swarm/commander/override`
+（brokerHost/brokerPort 是 Inspector 序列化字段，默认已对齐本机 broker）。
+
+### Unity 就位（在终端 1 起场景之前）
+
+1. Unity Hub 打开 `unity/SwarmUnityDemo`，打开 `Assets/Scenes/SampleScene.unity`
+2. 点 ▶ Play。控制台应出现 `Subscribed to MQTT telemetry topic: swarm/drone/+/telemetry`
+3. 摆机位：俯拍全局（能同时看到两架相向无人机 + 分流轨迹）；若画面里有 `FlightHUD` 就保留右下角
+   （它实时显示每架机的 X/Y/Z + `⚠ override` 状态，是比颜色更可读的文字证据）
+
+### 时间轴对拍（评审点）
+
+| 时刻 | Unity 画面 | 终端 1（safety_gate） | 终端 2（AGH TUI） |
+|---|---|---|---|
+| 0s | 1 号机（蓝）、2 号机（红）相向接近 | 蜂群就位 | 输 `/yolo` + 监控指令 |
+| ~30s | 接近阈值，**1 号机蓝 → 黄 → 红**，两机开始横向分流 | `override drone=... risk=...` | 模型自动调 `list_safety_events` 读到 `safety_override` |
+| ~31s | 两机沿避让航点转向、拉开距离 | mcp_bridge 下发 `swarm/drone/N/command` | `read_telemetry` → `publish_waypoint` 依次出现 |
+| ~33s+ | 颜色回落蓝色，回到原任务方向 | — | 重规划完成 |
+
+### 颜色状态机（DroneTelemetryView）
+
+`normal` 蓝 `(0.10,0.45,0.95)` → `warning` 黄 `(0.95,0.72,0.18)`（mode=warning 或 risk≥0.32）→
+`override` 红 `(0.95,0.20,0.16)`；每次 override 状态保持 **2s** 后回落蓝色。黄（warning）来自
+`swarm/commander/status` 的 `mode=warning` 事件，是否出现取决于安全门阈值路径，**红（override）是稳定信号**。
+
+> **录制坑（务必注意）**：`FallbackColor` 里**奇数 ID = 蓝方、偶数 ID = 红方**，而 override 红与「红方」
+> 基色是同一个红 `(0.95,0.20,0.16)`。所以 `agh_mcp_scenario.py` 的 **2 号机（偶数）本来就是红色**，override
+> 时颜色不变、看不出否决。录制时把镜头焦点放在 **1 号机**的蓝→黄→红变化上；2 号机的否决靠**轨迹分流**体现。
+
 ## 说明与边界
 
 - 本演示只用于**展示「模型执行闭环」**；benchmark（`stage4_benchmark.py`）仍走 thin one-shot
