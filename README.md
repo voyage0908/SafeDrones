@@ -179,6 +179,7 @@ SafeDrones/
 ├── safety_gate.py          # Safety Gate 入口
 ├── marl_pilot.py           # MARL 飞控入口
 ├── DEMO_MCP.md             # 模型执行闭环演示录制指南
+├── DEMO_RECORDING.md       # 完整演示录制教程（环境→数据→三屏→成片）
 ├── RESULTS.md              # C2/C3/C4 消融对比
 └── COMPARISON.md           # 与原项目（上游 SafeDrones）的对比
 ```
