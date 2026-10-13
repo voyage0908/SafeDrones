@@ -113,6 +113,12 @@ ORCA 保留的有价值原语是 `orca_pair_risk`——用完整 2D 相对速度
 （非逐 bit 数值主张）。`stage4_benchmark.py` 为实时多进程 MQTT 端到端集成基准，其绝对值受时序影响、
 作冒烟测试用。详见 [RESULTS.md](RESULTS.md) 的「可复现性说明」。
 
+**丢包鲁棒性（升级 D）**：`--packet-loss 0.0,0.1,0.3,0.5` 在确定性基准里按固定种子注入「遥测丢包 +
+override 命令丢包」，量化通信劣化下的安全余量侵蚀——安全门在 0–30% 丢包率下几乎零碰撞、最坏最小间距
+单调下降，到 50% 极端丢包才在密集场景（four_way / formation）失守，而简单两机场景仍 0 碰撞。端到端
+丢包注入走 `stage4_benchmark.py --packet-loss` + `scripts/mqtt_lossy_proxy.py`。详见 [RESULTS.md](RESULTS.md)
+的「丢包消融」。
+
 ## 环境要求
 
 - Python ≥ 3.10（本项目用 3.13 的 `.venv`）
@@ -142,7 +148,7 @@ export PATH="$PWD/.venv/Scripts:$PATH"
 ## 运行测试
 
 ```bash
-./.venv/Scripts/python.exe -m unittest discover -s tests -v   # 84 个测试全绿
+./.venv/Scripts/python.exe -m unittest discover -s tests -v   # 96 个测试全绿
 ```
 
 ## 项目结构
@@ -159,12 +165,13 @@ SafeDrones/
 ├── mcp_bridge.py           # MCP 桥（stdio，5 工具）→ 暴露执行层给 AGH
 ├── scripts/                # 工具脚本
 │   ├── stage4_benchmark.py # 消融实验自动化 Runner（实时 MQTT，端到端集成）
-│   ├── stage4_benchmark_deterministic.py # 进程内确定性基准（可复现 C2/C3 安全结论）
+│   ├── stage4_benchmark_deterministic.py # 进程内确定性基准（可复现 C2/C3/C4 安全结论 + 丢包消融）
+│   ├── mqtt_lossy_proxy.py # 丢包注入代理（端到端 --packet-loss 用）
 │   ├── agh_mcp_scenario.py # AGH 闭环演示场景（起 broker+drone+gate，注入对撞）
 │   ├── dev_broker.py       # 开发用 MQTT broker（amqtt）
 │   ├── gen_results_md.py   # 生成 RESULTS.md
 │   └── ...
-├── tests/                  # 单元测试（84 个）
+├── tests/                  # 单元测试（96 个）
 ├── unity/                  # Unity 3D 可视化（可选）
 ├── gateway.py              # 命令/事件 HTTP 接口（MQTT 网关封装）
 ├── mock_drone.py           # 虚拟无人机入口
