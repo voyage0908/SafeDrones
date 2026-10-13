@@ -121,6 +121,18 @@ def main() -> None:
         log_dir,
         start_positions=start_positions,
     )
+    # 演示健壮性：实时 MQTT（qos=0、多进程）存在时序抖动，安全门每 0.1s 决策、命令到达时已晚，
+    # 且默认 min-override-sec=0 / vertical-escape-gain=0 会让接管刚生效就释放、无垂直余量，
+    # 在简单穿越场景反复振荡乃至漏判（曾复现 head_on 最小间距 0.076m 的真碰撞）。
+    # 这里只给交互式录屏加「接管保持 + 垂直避障」吸收抖动；确定性基准走进程内 SafetyGate、
+    # 不受影响，权威的「0 碰撞」结论不变。
+    for _svc in services:
+        if _svc.name == "safety_gate":
+            _svc.argv += [
+                "--vertical-escape-gain", "0.5",
+                "--escape-distance", "1.2",
+                "--min-override-sec", "1.5",
+            ]
     monitor = Stage4Monitor("127.0.0.1", mqtt_port, qos=0, expected_drones=scenario.drone_count)
     replanner = C4Replanner(scenario, targets) if condition == "C4" else None
     red_controller = (

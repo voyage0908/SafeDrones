@@ -88,7 +88,7 @@ Safety Gate (safety_gate.py)  ←→  飞控状态/遥测
 - `orca_pair_risk(...)`：速度障碍意义下的「到碰撞时间」（预测式风险原语）
 - `orca_diversion_waypoint(...)`：用 ORCA 协同速度方向生成分流航点
 
-全部 **config 门控、默认关闭**（`orca_enabled=False`），现有关键路径（C2/C3/C4 的 84 单测 + 消融数据）
+全部 **config 门控、默认关闭**（`orca_enabled=False`），现有关键路径（C2/C3/C4 的 96 单测 + 消融数据）
 零改动、零风险。开关见 `safety_gate.py --orca / --orca-early`，benchmark 见 `stage4_benchmark.py --orca`。
 
 **诚实结论（确定性消融，非 MQTT 时序噪声）**：在对称相向穿越与随机密集交叉的进程内仿真里，ORCA 的

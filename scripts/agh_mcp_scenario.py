@@ -77,6 +77,37 @@ def _publish_commands(commands: list[dict]) -> None:
     client.disconnect()
 
 
+def _kill_tree(p: subprocess.Popen) -> None:
+    """彻底结束一个进程及其全部子进程。
+
+    Windows 下 Popen.terminate()/kill() 只杀直接子进程；dev_broker.py 用
+    subprocess.run(["amqtt", ...]) 拉起的 broker 会变成孤儿残留，长期占用 1883 端口，
+    进而让后续 publish_waypoint 撞上「broker 已死」却读遥测正常（缓存）的假象。
+    """
+    if p.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=3)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+
 def main() -> int:
     args = parse_args()
 
@@ -102,6 +133,7 @@ def main() -> int:
             str(ROOT / "safety_gate.py"),
             "--host", HOST, "--port", str(PORT),
             "--vertical-escape-gain", "0.0",  # 纯水平避障，便于观察
+            "--min-override-sec", "1.5",  # 接管保持 1.5s，避免实时抖动下反复振荡、产出一个干净的 override 事件供模型读取
             "--log-level", "INFO",
         )
         time.sleep(2.0)  # 等 drone / gate 连上 broker
@@ -127,16 +159,7 @@ def main() -> int:
         return 130
     finally:
         for p in procs:
-            try:
-                p.terminate()
-            except Exception:
-                pass
-        time.sleep(0.5)
-        for p in procs:
-            try:
-                p.kill()
-            except Exception:
-                pass
+            _kill_tree(p)
 
 
 if __name__ == "__main__":

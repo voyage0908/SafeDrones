@@ -92,7 +92,8 @@ class SwarmBridge:
         except ModuleNotFoundError as exc:
             raise RuntimeError("missing dependency: paho-mqtt") from exc
         # 允许多个 bridge 实例并存（例如 daemon 桥 + 临时测试桥），避免 MQTT client_id 冲突互相挤下线。
-        client_id = os.environ.get("SAFEDRONES_MQTT_CLIENT_ID", "mcp-bridge")
+        # 默认带随机后缀，确保不显式指定时也不会两个桥共用 client_id "mcp-bridge" 互相踢下线。
+        client_id = os.environ.get("SAFEDRONES_MQTT_CLIENT_ID", f"mcp-bridge-{uuid4().hex[:8]}")
         try:
             return mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
         except AttributeError:
@@ -198,9 +199,13 @@ def publish_waypoint(
     rationale: str = "",
 ) -> dict[str, Any]:
     if len(waypoint) != 3:
-        raise ValueError("waypoint 必须是 [x, y, z] 三元素")
+        return {"published": False, "error": "waypoint 必须是 [x, y, z] 三元素数值列表，例如 [5, 5, 2]"}
     command = command_payload(drone, waypoint, priority, confidence, ttl_sec, rationale)
-    BRIDGE.publish_command(command)
+    try:
+        BRIDGE.publish_command(command)
+    except RuntimeError as exc:
+        # broker 断连时给模型返回可读原因，而不是被 mcp 框架吞成无细节的 "Error executing tool"。
+        return {"published": False, "error": str(exc), "command": command}
     return {"published": True, "command_id": command["command_id"], "command": command}
 
 
@@ -241,7 +246,10 @@ def list_safety_events(since_ms: int = 0, limit: int = 20) -> list[dict[str, Any
 )
 def emergency_abort(drone: int) -> dict[str, Any]:
     command = hover_payload(drone)
-    BRIDGE.publish_command(command)
+    try:
+        BRIDGE.publish_command(command)
+    except RuntimeError as exc:
+        return {"published": False, "error": str(exc), "command": command}
     return {"published": True, "command_id": command["command_id"], "command": command}
 
 
