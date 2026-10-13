@@ -16,7 +16,7 @@ import time
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-ROOT = r"C:\Users\Lenovo\Desktop\新建文件夹\SafeDrones"
+ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
 
 

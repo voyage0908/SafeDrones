@@ -1,12 +1,13 @@
 """临时测试：通过 stdio 连接 mcp_bridge，验证 MCP 协议层（AGH 将用同样方式接入）。"""
 import asyncio
+import os
 import sys
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-PY = r"C:\Users\Lenovo\Desktop\新建文件夹\SafeDrones\.venv\Scripts\python.exe"
-CWD = r"C:\Users\Lenovo\Desktop\新建文件夹\SafeDrones"
+CWD = os.path.dirname(os.path.abspath(__file__))
+PY = os.path.join(CWD, ".venv", "Scripts", "python.exe")
 
 
 async def main() -> None:
