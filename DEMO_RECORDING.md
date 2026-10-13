@@ -87,6 +87,27 @@ OK
 
 ---
 
+## 2.5 基础层演示（Safety Gate 可视化）——改进前的原教程已并入
+
+在 AGH 闭环（§3）之前，先录一段「不靠模型」的硬安全可视化，证明**独立安全门**这一层：
+
+```bash
+./.venv/Scripts/python.exe scripts/stage4_demo.py --scenario head_on_crossing --condition C3 --seed 0
+```
+
+- `stage4_demo.py` 自起 broker + 2 架 mock drone + safety_gate + marl_pilot，无需另起 broker；
+  在「起始分离就位」与「注入穿越目标」之间**交互暂停**，方便先开 Unity Play、再回车触发穿越。
+- 场景可选：`head_on_crossing / perpendicular_crossing / diagonal_crossing / four_way_crossing /
+  pursuit_intercept / formation_crossing（5 机）/ four_v_four（8 机 4v4）`；条件 `C2/C3/C4`。
+- Unity 里观察 **1 号机蓝 → 黄 → 红 → 回落蓝** 的完整颜色状态机（详见 §3.4 的录制坑）。
+- 这条命令统一取代了改进前的三个 shell 入口：`stage4_demo.sh`（3 场景 C3）、
+  `llm_timeout_demo.sh`（C4 注入 4s LLM 掉线）、`packet_loss_demo.sh`（丢包代理）——
+  它们的能力现已并入 `stage4_demo.py`（可视化）与 `stage4_benchmark_deterministic.py`（数据）。
+
+成片里把这段放在「开场架构图」之后、「AGH 闭环」之前：先证「不出事」，再证「聪明 + 闭环」。
+
+---
+
 ## 3. 完整演示录制（三屏）
 
 ### 3.1 终端 A —— MQTT broker（先起）
@@ -178,3 +199,5 @@ publish_waypoint 下发一个侧向避让航点（保持高度、横向偏移）
 - 消融结论与 ORCA 负结果：`RESULTS.md`
 - 与原项目对比：`COMPARISON.md`
 - 架构与快速开始：`README.md`
+- 演示脚本 + 话术 / 逐字稿 + 分镜（作品工作区）：`SafeDrones_演示脚本与话术_v2.md`、
+  `SafeDrones_演示视频_逐字稿与分镜_v2.md`
