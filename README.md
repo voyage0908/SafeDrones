@@ -108,8 +108,10 @@ ORCA 保留的有价值原语是 `orca_pair_risk`——用完整 2D 相对速度
 
 **可复现性**：安全结论（C2=碰撞、C3/C4=0 碰撞）是确定性的，由
 `scripts/stage4_benchmark_deterministic.py` 在进程内固定步长复现（复用相同 `Scenario` 几何 +
-`SafetyGate` + `MockDroneState`），10 种子逐 bit 可复现；`stage4_benchmark.py` 为实时多进程 MQTT
-端到端集成基准，其绝对值受时序影响、作冒烟测试用。详见 [RESULTS.md](RESULTS.md) 的「可复现性说明」。
+`SafetyGate` + `MockDroneState`），10 种子逐 bit 可复现；C4 的确定性恢复（改进① 缓存「返回原任务
+终点」）使 C4 的安全结果与 C3 逐项一致、`replan_failure` 恒为 0，其 AGH/LLM 重规划闭环本身属功能演示
+（非逐 bit 数值主张）。`stage4_benchmark.py` 为实时多进程 MQTT 端到端集成基准，其绝对值受时序影响、
+作冒烟测试用。详见 [RESULTS.md](RESULTS.md) 的「可复现性说明」。
 
 ## 环境要求
 

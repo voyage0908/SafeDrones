@@ -23,11 +23,18 @@ formation C3 20% vs 文档 100%、four_v_four C3 0% vs 文档 50%）。这**不�
 | 四向交叉 (four-way) | 10/10 | 0.014 | 0/10 | 10/10 | 0.643 |
 | 编队交叉 (formation) | 10/10 | 0.030 | 0/10 | 10/10 | 0.594 |
 
+**C4（安全门 + AGH 重规划）同样确定性可复现**：改进① 已把恢复策略做成确定性（`precompute_policy`
+缓存「返回原任务终点」的航点、override 触发时 `_replay_cached` 零延迟回放），故 C4 的碰撞率 / 成功率 /
+最坏最小间距与 C3 **逐项一致**（上表 C3 列即 C4 的安全结果），且 `replan_failure` 恒为 0（确定性缓存
+不失败）。C4 相对 C3 的增量价值——**AGH/LLM 重规划闭环**（评分「模型执行闭环 20%」）——是**功能性演示**
+（[DEMO_MCP.md](DEMO_MCP.md) + MQTT 基准「重规划失败=0」），而非逐 bit 可复现的数值主张：LLM 输出本身
+非确定性，但它在改进① 里已被移出穿越关键路径，不影响安全结论的可复现性。
+
 > **证据层级**：确定性进程内仿真 = 安全结论的**主要定量证据**（可复现、可复核）；
 > `stage4_benchmark.py` MQTT 基准 = 端到端集成冒烟测试（证明整套架构能跑通，绝对值指示性、受时序影响）。
 > `pursuit_intercept` / `four_v_four` 含红方追击微控（`RedPursuitController`，对抗/任务级），不在
 > 确定性「硬安全底线」脚本建模范围内，其结果以 MQTT 基准 + 下方文档说明为准。
-> 生成：`python scripts/stage4_benchmark_deterministic.py --scenario all --conditions C2,C3 --seeds 10`，
+> 生成：`python scripts/stage4_benchmark_deterministic.py --scenario all --conditions C2,C3,C4 --seeds 10`，
 > 输出 `results/stage4_deterministic/{summary,aggregate}.csv`。
 
 ## 端到端 MQTT 基准（集成冒烟测试，绝对值受时序影响）

@@ -1,4 +1,4 @@
-"""确定性进程内基准：可复现的 C2/C3 安全结论。
+"""确定性进程内基准：可复现的 C2/C3/C4 安全结论。
 
 与 `stage4_benchmark.py`（实时多进程 MQTT 基准）不同，本脚本在**同一进程内、固定步长**地
 驱动「MARL 飞控朝目标 + Safety Gate 否决 + MockDroneState 运动学」这条安全闭环的核心，
@@ -15,11 +15,15 @@
 建模范围（诚实边界）：
 - 本脚本建模「朝目标飞行 + 安全门 override 分流」这一**硬安全底线**，只覆盖无红方追击的
   6 个对称穿越场景（head_on / perpendicular / diagonal / llm_timeout / four_way / formation，
-  均 `red_pursuit=False`）。红方追击微控（`RedPursuitController`）与 AGH/LLM 重规划（C4）
-  属对抗/任务级，见 MQTT 基准，不在本脚本建模范围内。
+  均 `red_pursuit=False`）。红方追击微控（`RedPursuitController`）属对抗/任务级，不在建模范围内。
+- C4 在本脚本里的建模 = C3 的安全门 + **确定性恢复**（改进① `_replay_cached` 缓存「返回原任务
+  终点」的确定性航点）。因恢复航点 = 原任务终点 = C3 接管结束后的默认回目标行为，C4 的飞行轨迹
+  与 C3 一致，故 C4 的 0 碰撞结论同样确定性可复现；`replan_failure` 恒为 0（确定性缓存不失败）。
+- C4 的「AGH/LLM **实时**重规划」（模型输出、非确定性）不在本脚本建模范围内——它由 MQTT 基准的
+  「重规划失败=0」+ [DEMO_MCP.md](DEMO_MCP.md) 功能演示体现，是**闭环功能**而非数值可复现主张。
 
 用法：
-  python scripts/stage4_benchmark_deterministic.py --scenario all --conditions C2,C3 --seeds 10
+  python scripts/stage4_benchmark_deterministic.py --scenario all --conditions C2,C3,C4 --seeds 10
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ from swarm.safety import DroneSnapshot, SafetyConfig, SafetyGate  # noqa: E402
 from swarm.simulation import MockDroneState, distance  # noqa: E402
 from stage4_benchmark import Scenario, SCENARIO_NAMES  # noqa: E402
 
-SUPPORTED_CONDITIONS = {"C2", "C3"}
+SUPPORTED_CONDITIONS = {"C2", "C3", "C4"}
 _DT = 0.05  # 仿真步长（秒），20Hz 运动学积分
 _GATE_INTERVAL = 0.1  # Safety Gate 决策间隔（秒），与 safety_gate.py --interval 一致
 _SAFETY_HOLD_SEC = 1.5  # 无人机「安全命令优先」窗口（秒），与 MockDroneState.apply_command 一致
@@ -108,7 +112,7 @@ def run_trial(scenario: Scenario, condition: str, seed: int) -> dict[str, float 
 
     gate = None
     protect: set[int] = set()
-    if condition == "C3":
+    if condition in ("C3", "C4"):
         dense = scenario.name in {"formation_crossing", "four_v_four"}
         cfg = SafetyConfig(
             vertical_escape_gain=0.5 if dense else 0.0,
@@ -120,6 +124,9 @@ def run_trial(scenario: Scenario, condition: str, seed: int) -> dict[str, float 
     last_safety: dict[int, float] = {}
     min_distance = float("inf")
     override_count = 0
+    active_override: set[int] = set()  # 当前处于 override 的无人机（用于去重「新接管」事件）
+    replan_count = 0
+    replan_failure = 0  # 确定性恢复（返回原任务终点）恒不失败
     completed = False
 
     steps = int(scenario.cross_timeout / _DT)
@@ -129,7 +136,7 @@ def run_trial(scenario: Scenario, condition: str, seed: int) -> dict[str, float 
     for step in range(steps):
         t = step * _DT
 
-        # Safety Gate 决策（仅 C3）
+        # Safety Gate 决策（C3 / C4）
         if gate is not None and step % gate_every == 0:
             snaps = [
                 DroneSnapshot(
@@ -146,9 +153,16 @@ def run_trial(scenario: Scenario, condition: str, seed: int) -> dict[str, float 
                     continue
                 if decision.mode == "override":
                     override_count += 1
+                    if decision.drone not in active_override:
+                        active_override.add(decision.drone)
+                        # C4：新 override 事件触发一次确定性重规划（返回原任务终点），上限 2 次/试
+                        if condition == "C4" and replan_count < 2:
+                            replan_count += 1
                     if decision.safety_waypoint is not None:
                         states[decision.drone].target_pos = decision.safety_waypoint
                         last_safety[decision.drone] = t
+                else:
+                    active_override.discard(decision.drone)
 
         # 非接管窗口内的无人机朝目标飞行（「朝目标」= monitor 下发的 goal 命令 + 飞控意图）
         for did in ids:
@@ -188,13 +202,15 @@ def run_trial(scenario: Scenario, condition: str, seed: int) -> dict[str, float 
         "collision_count": collision,
         "min_distance_m": round(min_distance, 4) if min_distance != float("inf") else None,
         "override_count": override_count,
+        "replan_count": replan_count,
+        "replan_failure": replan_failure,
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Deterministic in-process C2/C3 safety benchmark.")
+    parser = argparse.ArgumentParser(description="Deterministic in-process C2/C3/C4 safety benchmark.")
     parser.add_argument("--scenario", default="all", choices=[*DETERMINISTIC_SCENARIOS, "all"])
-    parser.add_argument("--conditions", default="C2,C3")
+    parser.add_argument("--conditions", default="C2,C3,C4")
     parser.add_argument("--seeds", type=int, default=10)
     parser.add_argument("--out", default="results/stage4_deterministic")
     args = parser.parse_args()
@@ -202,7 +218,7 @@ def main() -> None:
     conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
     for c in conditions:
         if c not in SUPPORTED_CONDITIONS:
-            raise SystemExit(f"本脚本只支持 {sorted(SUPPORTED_CONDITIONS)}，收到 {c}（C4 含 LLM 重规划，非确定性，见 stage4_benchmark.py）")
+            raise SystemExit(f"本脚本只支持 {sorted(SUPPORTED_CONDITIONS)}，收到 {c}（注：本脚本只建模 C4 的确定性恢复，不含 AGH/LLM 实时重规划）")
     scenarios = [Scenario(n) for n in (DETERMINISTIC_SCENARIOS if args.scenario == "all" else [args.scenario])]
 
     out_dir = Path(args.out)
@@ -219,6 +235,7 @@ def main() -> None:
     fieldnames = [
         "scenario", "condition", "seed", "task_success", "swap_completed",
         "collision_count", "min_distance_m", "override_count",
+        "replan_count", "replan_failure",
     ]
     with summary_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -230,8 +247,9 @@ def main() -> None:
     agg_fieldnames = [
         "scenario", "condition", "runs", "success_rate", "collision_rate",
         "min_min_distance_m", "avg_min_distance_m", "avg_override_count",
+        "avg_replan_count", "replan_failure_count",
     ]
-    print(f"{'scenario':22} {'cond':3} {'succ':>4} {'coll':>4} {'worst_min':>9} {'avg_min':>8} {'avg_ov':>7}")
+    print(f"{'scenario':22} {'cond':3} {'succ':>4} {'coll':>4} {'worst_min':>9} {'avg_min':>8} {'avg_ov':>7} {'avg_rp':>6} {'rp_fail':>7}")
     agg_rows = []
     for scenario in scenarios:
         for condition in conditions:
@@ -242,16 +260,19 @@ def main() -> None:
             worst = min(mins) if mins else None
             avg = round(sum(mins) / len(mins), 4) if mins else None
             avg_ov = round(sum(r["override_count"] for r in group) / len(group), 1)
+            avg_rp = round(sum(r["replan_count"] for r in group) / len(group), 2)
+            rp_fail = sum(r["replan_failure"] for r in group)
             agg = {
                 "scenario": scenario.name, "condition": condition, "runs": len(group),
                 "success_rate": success / len(group), "collision_rate": collisions / len(group),
                 "min_min_distance_m": worst, "avg_min_distance_m": avg,
-                "avg_override_count": avg_ov,
+                "avg_override_count": avg_ov, "avg_replan_count": avg_rp,
+                "replan_failure_count": rp_fail,
             }
             agg_rows.append(agg)
             print(
                 f"{scenario.name:22} {condition:3} {success:4}/{len(group)} "
-                f"{collisions:4}/{len(group)} {worst:9.3f} {avg:8.3f} {avg_ov:7.1f}"
+                f"{collisions:4}/{len(group)} {worst:9.3f} {avg:8.3f} {avg_ov:7.1f} {avg_rp:6.2f} {rp_fail:7}"
             )
 
     with agg_path.open("w", encoding="utf-8", newline="") as f:
