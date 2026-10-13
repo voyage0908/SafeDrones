@@ -20,9 +20,9 @@
 ## 1. 前置环境（一次性）
 
 ```bash
-cd /c/Users/Lenovo/Desktop/新建文件夹/SafeDrones
+cd SafeDrones
 export PATH="$PWD/.venv/Scripts:$PATH"    # Python 3.13 venv
-AGH_CLI="C:/Users/Lenovo/Desktop/AI+黑马竞赛/agnes-harness/packages/cli/dist/local/agnes.mjs"
+AGH_CLI="<agnes-harness>/packages/cli/dist/local/agnes.mjs"   # 换成本机 agnes-harness 仓库路径
 
 # 确认 AGH 的 safedrones 桥 ready（trust=trusted desired=enabled actual=ready）
 node "$AGH_CLI" mcp list
@@ -107,7 +107,7 @@ OK
 ### 3.3 终端 C —— AGH TUI（在 30s 窗口内授信 + 下发监控指令）
 
 ```bash
-AGH_CLI="C:/Users/Lenovo/Desktop/AI+黑马竞赛/agnes-harness/packages/cli/dist/local/agnes.mjs"
+AGH_CLI="<agnes-harness>/packages/cli/dist/local/agnes.mjs"
 node "$AGH_CLI"
 ```
 

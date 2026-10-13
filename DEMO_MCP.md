@@ -15,7 +15,7 @@ AGH 的 MCP 工具循环其实**早就接好了**（`safedrones` 桥 `trusted + 
 ## 前置检查
 
 ```bash
-AGH_CLI="C:/Users/Lenovo/Desktop/AI+黑马竞赛/agnes-harness/packages/cli/dist/local/agnes.mjs"
+AGH_CLI="<agnes-harness>/packages/cli/dist/local/agnes.mjs"   # 换成本机 agnes-harness 仓库路径
 # 1) AGH daemon 已启动、safedrones 桥 ready
 node "$AGH_CLI" mcp list
 #    应看到：safedrones ... trust=trusted desired=enabled actual=ready
@@ -26,7 +26,7 @@ node "$AGH_CLI" mcp list
 ### 终端 1 —— 起蜂群对撞场景（先就位，`--delay` 秒后才注入对撞）
 
 ```bash
-cd /c/Users/Lenovo/Desktop/新建文件夹/SafeDrones
+cd SafeDrones
 ./.venv/Scripts/python.exe scripts/agh_mcp_scenario.py --delay 30 --hold-sec 60
 ```
 
@@ -37,7 +37,7 @@ cd /c/Users/Lenovo/Desktop/新建文件夹/SafeDrones
 ### 终端 2 —— 在 30s 等待窗口内，AGH TUI 授信并下发监控指令
 
 ```bash
-AGH_CLI="C:/Users/Lenovo/Desktop/AI+黑马竞赛/agnes-harness/packages/cli/dist/local/agnes.mjs"
+AGH_CLI="<agnes-harness>/packages/cli/dist/local/agnes.mjs"
 node "$AGH_CLI"
 ```
 
