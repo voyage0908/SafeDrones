@@ -116,7 +116,7 @@ ORCA 保留的有价值原语是 `orca_pair_risk`——用完整 2D 相对速度
 
 **丢包鲁棒性（升级 D）**：`--packet-loss 0.0,0.1,0.3,0.5` 在确定性基准里按固定种子注入「遥测丢包 +
 override 命令丢包」，量化通信劣化下的安全余量侵蚀——安全门在 0–30% 丢包率下几乎零碰撞、最坏最小间距
-单调下降，到 50% 极端丢包才在密集场景（four_way / formation）失守，而简单两机场景仍 0 碰撞。端到端
+单调下降，到 50% 极端丢包才在密集场景（four_way / formation）失守，而简单两机场景基本 0 碰撞（perpendicular 在 30%+ 偶发 1 次边缘碰撞）。端到端
 丢包注入走 `stage4_benchmark.py --packet-loss` + `scripts/mqtt_lossy_proxy.py`。详见 [RESULTS.md](RESULTS.md)
 的「丢包消融」。
 
